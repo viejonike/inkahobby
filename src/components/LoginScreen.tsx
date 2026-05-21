@@ -17,6 +17,7 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isPressing, setIsPressing] = useState(false);
 
   // Long press refs
   const pressStartRef = useRef<number | null>(null);
@@ -67,6 +68,7 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
 
   const handleHelpPressStart = useCallback(() => {
     isPressingRef.current = true;
+    setIsPressing(true);
     pressStartRef.current = Date.now();
 
     // Reset the progress ring
@@ -82,6 +84,7 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
   const handleHelpPressEnd = useCallback(() => {
     isPressingRef.current = false;
     pressStartRef.current = null;
+    setIsPressing(false);
 
     if (pressTimerRef.current) {
       clearTimeout(pressTimerRef.current);
@@ -184,19 +187,18 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
         </button>
       </motion.form>
 
-      {/* Bottom Help Button with invisible progress ring */}
+      {/* Bottom Help Button with circular progress ring */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.4 }}
         className="mt-10 relative"
       >
-        {/* Invisible SVG progress ring */}
+        {/* SVG progress ring - appears during long press */}
         <svg
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+          className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none transition-opacity duration-300 ${isPressing ? 'opacity-100' : 'opacity-0'}`}
           width="60"
           height="60"
-          style={{ opacity: 0 }}
         >
           <circle
             cx="30"
@@ -212,6 +214,7 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
               strokeDashoffset: 2 * Math.PI * 20,
               transform: 'rotate(-90deg)',
               transformOrigin: '30px 30px',
+              transition: 'opacity 0.3s ease',
             }}
           />
         </svg>

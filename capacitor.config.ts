@@ -5,22 +5,17 @@ const config: CapacitorConfig = {
   appName: 'InkaHobby',
   webDir: 'out',
   server: {
-    // In development, point to the dev server
-    // In production, this should be empty or point to your deployed URL
-    url: process.env.CAPACITOR_SERVER_URL || '',
-    cleartext: true,
+    androidScheme: 'https',
   },
   plugins: {
     SplashScreen: {
       launchShowDuration: 2000,
-      backgroundColor: '#111827',
-      showSpinner: true,
-      spinnerColor: '#F59E0B',
+      backgroundColor: '#1a1a2e',
+      showSpinner: false,
     },
-    StatusBar: {
-      style: 'dark',
-      backgroundColor: '#111827',
-    },
+  },
+  android: {
+    allowMixedContent: true,
   },
 };
 

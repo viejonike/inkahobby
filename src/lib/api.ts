@@ -1,12 +1,12 @@
 import type { VaultFile, LocalUser } from './storage';
 
-// CRITICAL: API_BASE must work in both browser and Capacitor
+// CRITICAL: API_BASE must work in both browser and Capacitor native app
 const getApiBase = (): string => {
   if (typeof window === 'undefined') return '';
 
   // If running in Capacitor native app, we need the full server URL
   if ((window as unknown as { Capacitor?: unknown }).Capacitor) {
-    // Check for window.INKA_API_BASE first (can be set by the app)
+    // Check for window.INKA_API_BASE first (can be set by the app or a config script)
     const windowBase = (window as unknown as { INKA_API_BASE?: string }).INKA_API_BASE;
     if (windowBase) return windowBase;
 
@@ -14,12 +14,14 @@ const getApiBase = (): string => {
     const envBase = process.env.NEXT_PUBLIC_API_URL;
     if (envBase) return envBase;
 
-    // Default to the server IP for development
-    console.warn('[API] No API base URL configured for Capacitor. Set NEXT_PUBLIC_API_URL or window.INKA_API_BASE');
-    return '';
+    // Default to the server IP for the Capacitor native app
+    // This is the server where the Next.js backend runs
+    const defaultUrl = 'http://192.168.1.100:3000';
+    console.warn(`[API] No API base URL configured for Capacitor. Using default: ${defaultUrl}`);
+    return defaultUrl;
   }
 
-  // In browser, use relative paths (same origin)
+  // In browser (same origin), use relative paths
   return '';
 };
 
