@@ -8,23 +8,43 @@ function hashPin(pin: string): string {
 
 export async function POST() {
   try {
-    const existing = await db.user.findUnique({ where: { username: 'superadmin' } });
-    if (existing) {
-      return NextResponse.json({ message: 'Super admin already exists', user: existing });
+    const results: string[] = [];
+
+    // Create superadmin if not exists
+    const existingSuper = await db.user.findUnique({ where: { username: 'superadmin' } });
+    if (!existingSuper) {
+      await db.user.create({
+        data: {
+          username: 'superadmin',
+          pin: hashPin('9999'),
+          role: 'superadmin',
+          blocked: false,
+        },
+      });
+      results.push('Super admin created (superadmin / 9999)');
+    } else {
+      results.push('Super admin already exists');
     }
 
-    const superAdmin = await db.user.create({
-      data: {
-        username: 'superadmin',
-        pin: hashPin('9999'),
-        role: 'superadmin',
-        blocked: false,
-      },
-    });
+    // Create admin if not exists
+    const existingAdmin = await db.user.findUnique({ where: { username: 'admin' } });
+    if (!existingAdmin) {
+      await db.user.create({
+        data: {
+          username: 'admin',
+          pin: hashPin('1234'),
+          role: 'admin',
+          blocked: false,
+        },
+      });
+      results.push('Admin created (admin / 1234)');
+    } else {
+      results.push('Admin already exists');
+    }
 
-    return NextResponse.json({ message: 'Super admin created', user: superAdmin });
+    return NextResponse.json({ message: 'Seed completed', results });
   } catch (error) {
-    console.error('Error seeding super admin:', error);
-    return NextResponse.json({ error: 'Failed to seed super admin' }, { status: 500 });
+    console.error('Error seeding:', error);
+    return NextResponse.json({ error: 'Failed to seed' }, { status: 500 });
   }
 }

@@ -10,6 +10,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'userId, type, and data are required' }, { status: 400 });
     }
 
+    // Check if the user exists first
+    const userExists = await db.user.findUnique({ where: { id: userId } });
+    if (!userExists) {
+      // If user doesn't exist on server, we can't sync the file yet
+      // This file will be retried in the next sync cycle
+      return NextResponse.json(
+        { error: 'User not found on server. File sync will be retried.', needsRetry: true },
+        { status: 404 }
+      );
+    }
+
     // Skip if file already exists
     const existing = await db.vaultFile.findUnique({ where: { id } });
     if (existing) {
@@ -28,9 +39,10 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    console.log(`[Sync] File synced: ${file.id} (type: ${type}, user: ${userId})`);
     return NextResponse.json(file);
   } catch (error) {
-    console.error('Error syncing file:', error);
+    console.error('[Sync] Error syncing file:', error);
     return NextResponse.json({ error: 'Failed to sync file' }, { status: 500 });
   }
 }

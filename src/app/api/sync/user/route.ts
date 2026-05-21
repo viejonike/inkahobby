@@ -10,15 +10,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Username and PIN are required' }, { status: 400 });
     }
 
-    const user = await db.user.upsert({
-      where: { username },
-      update: {
-        pin,
-        role: role || 'user',
-        ...(email !== undefined && { email }),
-        ...(blocked !== undefined && { blocked }),
-      },
-      create: {
+    // Try to find existing user by username
+    const existingUser = await db.user.findUnique({ where: { username } });
+
+    if (existingUser) {
+      // Update existing user
+      const user = await db.user.update({
+        where: { username },
+        data: {
+          pin,
+          role: role || 'user',
+          ...(email !== undefined && { email }),
+          ...(blocked !== undefined && { blocked }),
+        },
+      });
+      return NextResponse.json(user);
+    }
+
+    // Create new user - this handles users who registered offline
+    const user = await db.user.create({
+      data: {
         id: id || undefined,
         username,
         email: email || null,
@@ -29,9 +40,10 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    console.log(`[Sync] User synced: ${username} (role: ${user.role})`);
     return NextResponse.json(user);
   } catch (error) {
-    console.error('Error syncing user:', error);
+    console.error('[Sync] Error syncing user:', error);
     return NextResponse.json({ error: 'Failed to sync user' }, { status: 500 });
   }
 }

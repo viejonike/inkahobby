@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Layers, Eye, EyeOff, HelpCircle, Download } from 'lucide-react';
+import { Layers, Eye, EyeOff, HelpCircle, Download, Shield } from 'lucide-react';
 
 interface LoginScreenProps {
   onLogin: (email: string, password: string) => void;
@@ -24,16 +24,19 @@ export default function LoginScreen({ onLogin, onRegister, onAdminLogin, onHelp,
   const helpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const helpPressRef = useRef(false);
 
+  // Normal login - works for ALL users including admin and superadmin
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     onLogin(email, password);
   };
 
+  // Admin login via hidden access
   const handleAdminLogin = (e: React.FormEvent) => {
     e.preventDefault();
     onAdminLogin(adminUsername, adminPin);
   };
 
+  // Long press on help to reveal admin login
   const handleHelpPress = useCallback(() => {
     helpPressRef.current = true;
     helpPressStartRef.current = Date.now();
@@ -52,6 +55,7 @@ export default function LoginScreen({ onLogin, onRegister, onAdminLogin, onHelp,
     }
   }, []);
 
+  // Admin login screen (hidden, accessed via long-press help)
   if (showAdmin) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-[#16213e] via-[#1a1a2e] to-[#0f3460] flex flex-col items-center justify-center px-6">
@@ -61,7 +65,7 @@ export default function LoginScreen({ onLogin, onRegister, onAdminLogin, onHelp,
           className="w-full max-w-sm"
         >
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#e94560] to-[#c23152] flex items-center justify-center mx-auto mb-6 shadow-lg shadow-[#e94560]/30">
-            <Layers className="text-white" size={28} />
+            <Shield className="text-white" size={28} />
           </div>
           <h2 className="text-xl font-bold text-white text-center mb-1">Acceso Administrativo</h2>
           <p className="text-white/50 text-sm text-center mb-6">Ingresa tus credenciales de admin</p>
@@ -113,6 +117,8 @@ export default function LoginScreen({ onLogin, onRegister, onAdminLogin, onHelp,
     );
   }
 
+  // Normal login screen - works for regular users, admin, and superadmin
+  // Admin and superadmin log in with their correo/contraseña the same way
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#16213e] via-[#1a1a2e] to-[#0f3460] flex flex-col items-center justify-center px-6">
       {/* Logo */}

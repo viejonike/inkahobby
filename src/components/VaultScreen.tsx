@@ -5,7 +5,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   Plus,
-  X,
   Image as ImageIcon,
   Video,
   Camera,
@@ -21,6 +20,9 @@ import {
   Shield,
   ChevronRight,
   Check,
+  Upload,
+  Smartphone,
+  CheckCircle,
 } from 'lucide-react';
 import type { LocalUser, VaultFile } from '@/lib/storage';
 import { saveVaultFile, getVaultFiles, deleteVaultFile, addToSyncQueue, getPressDuration, setPressDuration, createBackup } from '@/lib/storage';
@@ -32,6 +34,8 @@ interface VaultScreenProps {
   onAutoLock: () => void;
 }
 
+const MAX_FILES_PER_EXPORT = 50;
+
 export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenProps) {
   const [files, setFiles] = useState<(VaultFile & { userId: string })[]>([]);
   const [selectedFile, setSelectedFile] = useState<(VaultFile & { userId: string }) | null>(null);
@@ -39,9 +43,13 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
   const [showSettings, setShowSettings] = useState(false);
   const [showFileViewer, setShowFileViewer] = useState(false);
   const [importSuccess, setImportSuccess] = useState(false);
+  const [importCount, setImportCount] = useState(0);
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
   const lastActivityRef = useRef<number>(Date.now());
   const [pressDurationVal, setPressDurationVal] = useState(getPressDuration());
-  const [showPinConfirm, setShowPinConfirm] = useState<string | null>(null); // fileId for delete confirmation
+  const [showPinConfirm, setShowPinConfirm] = useState<string | null>(null);
+  const [permissionStatus, setPermissionStatus] = useState<Record<string, 'granted' | 'denied' | 'prompt' | 'unavailable'>>({});
 
   // Auto-lock after 5 minutes of inactivity
   useEffect(() => {
@@ -67,85 +75,37 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
     loadFiles();
   }, [loadFiles]);
 
-  // Add file to vault
-  const handleImportFile = (accept: string, capture?: string) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = accept;
-    if (capture) {
-      (input as HTMLInputElement & { capture: string }).capture = capture;
-    }
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const base64 = event.target?.result as string;
-        const isVideo = file.type.startsWith('video/');
-        let thumbnail: string | undefined;
-
-        if (isVideo) {
-          thumbnail = await generateVideoThumbnail(file);
+  // Check permission status
+  const checkPermission = useCallback(async (type: 'camera' | 'gallery' | 'files'): Promise<boolean> => {
+    try {
+      // For web/ Capacitor, we try to use the Permissions API
+      if (navigator.permissions) {
+        let permissionName: PermissionName;
+        if (type === 'camera') {
+          permissionName = 'camera' as PermissionName;
         } else {
-          thumbnail = base64;
+          // Gallery and files don't have a direct permission name in web
+          // We just try to access them
+          return true;
         }
-
-        const vaultFile: VaultFile & { userId: string } = {
-          id: crypto.randomUUID(),
-          type: isVideo ? 'video' : 'photo',
-          data: base64,
-          thumbnail,
-          createdAt: new Date().toISOString(),
-          synced: false,
-          userId: user.id,
-        };
-
-        await saveVaultFile(vaultFile);
-        await addToSyncQueue({ type: 'file', data: vaultFile });
-        await loadFiles();
-        setShowImportSheet(false);
-        setImportSuccess(true);
-        setTimeout(() => setImportSuccess(false), 3000);
-      };
-      reader.readAsDataURL(file);
-    };
-    input.click();
-  };
-
-  // Import from files (any type)
-  const handleImportAnyFile = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '*/*';
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const base64 = event.target?.result as string;
-        const vaultFile: VaultFile & { userId: string } = {
-          id: crypto.randomUUID(),
-          type: file.type.startsWith('video/') ? 'video' : 'photo',
-          data: base64,
-          thumbnail: file.type.startsWith('video/') ? undefined : base64,
-          createdAt: new Date().toISOString(),
-          synced: false,
-          userId: user.id,
-        };
-
-        await saveVaultFile(vaultFile);
-        await addToSyncQueue({ type: 'file', data: vaultFile });
-        await loadFiles();
-        setShowImportSheet(false);
-        setImportSuccess(true);
-        setTimeout(() => setImportSuccess(false), 3000);
-      };
-      reader.readAsDataURL(file);
-    };
-    input.click();
-  };
+        const result = await navigator.permissions.query({ name: permissionName });
+        if (result.state === 'granted') {
+          setPermissionStatus(prev => ({ ...prev, [type]: 'granted' }));
+          return true;
+        } else if (result.state === 'denied') {
+          setPermissionStatus(prev => ({ ...prev, [type]: 'denied' }));
+          return false;
+        }
+        // 'prompt' state - will ask for permission
+        setPermissionStatus(prev => ({ ...prev, [type]: 'prompt' }));
+        return true;
+      }
+      return true;
+    } catch {
+      // Permissions API not available, just try
+      return true;
+    }
+  }, []);
 
   // Generate video thumbnail
   const generateVideoThumbnail = (file: File): Promise<string> => {
@@ -174,6 +134,175 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
       video.src = URL.createObjectURL(file);
       setTimeout(() => resolve(''), 5000);
     });
+  };
+
+  // Process multiple files and save to vault
+  const processFiles = useCallback(async (fileList: FileList | File[]) => {
+    const filesToProcess = Array.from(fileList).slice(0, MAX_FILES_PER_EXPORT);
+    if (filesToProcess.length === 0) return;
+
+    setImporting(true);
+    setImportProgress(0);
+    let imported = 0;
+
+    for (let i = 0; i < filesToProcess.length; i++) {
+      const file = filesToProcess[i];
+      try {
+        const base64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (event) => resolve(event.target?.result as string);
+          reader.readAsDataURL(file);
+        });
+
+        const isVideo = file.type.startsWith('video/');
+        let thumbnail: string | undefined;
+
+        if (isVideo) {
+          thumbnail = await generateVideoThumbnail(file);
+        } else if (file.type.startsWith('image/')) {
+          thumbnail = base64;
+        }
+
+        const vaultFile: VaultFile & { userId: string } = {
+          id: crypto.randomUUID(),
+          type: isVideo ? 'video' : 'photo',
+          data: base64,
+          thumbnail,
+          createdAt: new Date().toISOString(),
+          synced: false,
+          userId: user.id,
+        };
+
+        await saveVaultFile(vaultFile);
+        await addToSyncQueue({ type: 'file', data: vaultFile });
+        imported++;
+        setImportProgress(Math.round(((i + 1) / filesToProcess.length) * 100));
+      } catch (err) {
+        console.error('Error importing file:', err);
+      }
+    }
+
+    await loadFiles();
+    setShowImportSheet(false);
+    setImporting(false);
+    setImportCount(imported);
+    setImportSuccess(true);
+    setTimeout(() => {
+      setImportSuccess(false);
+      setImportCount(0);
+    }, 4000);
+  }, [user.id, loadFiles]);
+
+  // Import from gallery (photos and videos, multiple selection)
+  const handleImportFromGallery = async () => {
+    const canAccess = await checkPermission('gallery');
+    if (!canAccess) {
+      toast({
+        title: 'Permiso denegado',
+        description: 'Necesitas conceder permiso para acceder a la galería',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,video/*';
+    input.multiple = true;
+    input.onchange = async (e) => {
+      const fileList = (e.target as HTMLInputElement).files;
+      if (!fileList || fileList.length === 0) return;
+
+      if (fileList.length > MAX_FILES_PER_EXPORT) {
+        toast({
+          title: `Máximo ${MAX_FILES_PER_EXPORT} archivos`,
+          description: `Seleccionaste ${fileList.length} archivos. Solo se importarán los primeros ${MAX_FILES_PER_EXPORT}.`,
+        });
+      }
+
+      await processFiles(fileList);
+    };
+    input.click();
+  };
+
+  // Import from camera (single photo)
+  const handleImportFromCamera = async () => {
+    const canAccess = await checkPermission('camera');
+    if (!canAccess) {
+      toast({
+        title: 'Permiso denegado',
+        description: 'Necesitas conceder permiso para acceder a la cámara',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    (input as HTMLInputElement & { capture: string }).capture = 'environment';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      await processFiles([file]);
+    };
+    input.click();
+  };
+
+  // Import from camera video
+  const handleImportVideoFromCamera = async () => {
+    const canAccess = await checkPermission('camera');
+    if (!canAccess) {
+      toast({
+        title: 'Permiso denegado',
+        description: 'Necesitas conceder permiso para acceder a la cámara',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'video/*';
+    (input as HTMLInputElement & { capture: string }).capture = 'environment';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      await processFiles([file]);
+    };
+    input.click();
+  };
+
+  // Import from files (any type, multiple selection)
+  const handleImportFromFiles = async () => {
+    const canAccess = await checkPermission('files');
+    if (!canAccess) {
+      toast({
+        title: 'Permiso denegado',
+        description: 'Necesitas conceder permiso para acceder a los archivos',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '*/*';
+    input.multiple = true;
+    input.onchange = async (e) => {
+      const fileList = (e.target as HTMLInputElement).files;
+      if (!fileList || fileList.length === 0) return;
+
+      if (fileList.length > MAX_FILES_PER_EXPORT) {
+        toast({
+          title: `Máximo ${MAX_FILES_PER_EXPORT} archivos`,
+          description: `Seleccionaste ${fileList.length} archivos. Solo se importarán los primeros ${MAX_FILES_PER_EXPORT}.`,
+        });
+      }
+
+      await processFiles(fileList);
+    };
+    input.click();
   };
 
   // Delete file
@@ -250,14 +379,41 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
             initial={{ y: -60, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: -60, opacity: 0 }}
-            className="bg-[#1a1a2e] border border-white/10 mx-4 mt-4 rounded-xl p-4 flex items-start gap-3"
+            className="bg-[#1a1a2e] border border-green-500/30 mx-4 mt-4 rounded-xl p-4 flex items-start gap-3"
           >
-            <Check className="text-green-400 shrink-0 mt-0.5" size={18} />
+            <CheckCircle className="text-green-400 shrink-0 mt-0.5" size={18} />
             <div>
-              <p className="text-white text-sm font-medium">Importación exitosa</p>
-              <p className="text-white/50 text-xs mt-1">
-                Recuerda eliminar la foto/video original de la galería de tu teléfono para mayor privacidad.
+              <p className="text-white text-sm font-medium">
+                {importCount > 1
+                  ? `${importCount} archivos importados exitosamente`
+                  : 'Importación exitosa'}
               </p>
+              <p className="text-white/50 text-xs mt-1">
+                Recuerda eliminar las fotos/videos originales de la galería de tu teléfono para mayor privacidad.
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Importing Progress */}
+      <AnimatePresence>
+        {importing && (
+          <motion.div
+            initial={{ y: -60, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -60, opacity: 0 }}
+            className="bg-[#1a1a2e] border border-[#e94560]/30 mx-4 mt-4 rounded-xl p-4"
+          >
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-5 h-5 border-2 border-[#e94560] border-t-transparent rounded-full animate-spin" />
+              <p className="text-white text-sm font-medium">Importando archivos... {importProgress}%</p>
+            </div>
+            <div className="w-full bg-white/10 rounded-full h-2">
+              <div
+                className="bg-gradient-to-r from-[#e94560] to-[#c23152] h-2 rounded-full transition-all duration-300"
+                style={{ width: `${importProgress}%` }}
+              />
             </div>
           </motion.div>
         )}
@@ -270,8 +426,11 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
             <div className="w-20 h-20 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
               <ImageIcon size={32} className="text-white/20" />
             </div>
-            <p className="text-white/30 text-sm text-center">
+            <p className="text-white/30 text-sm text-center mb-2">
               Toca el botón + para importar fotos, videos o archivos
+            </p>
+            <p className="text-white/20 text-xs text-center">
+              Máximo {MAX_FILES_PER_EXPORT} archivos por exportación
             </p>
           </div>
         ) : (
@@ -339,60 +498,78 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
       <Dialog open={showImportSheet} onOpenChange={setShowImportSheet}>
         <DialogContent className="bg-[#1a1a2e] border-t border-white/10 rounded-t-3xl max-w-lg fixed bottom-0 left-0 right-0 translate-x-0 -translate-y-0 top-auto data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom duration-300 p-6 pb-10">
           <DialogHeader className="mb-4">
-            <DialogTitle className="text-white text-lg">Importar</DialogTitle>
+            <DialogTitle className="text-white text-lg flex items-center gap-2">
+              <Upload size={20} className="text-[#e94560]" />
+              Exportar a InkaHobby
+            </DialogTitle>
+            <p className="text-white/40 text-xs mt-1">Selecciona de donde quieres importar (máx. {MAX_FILES_PER_EXPORT} archivos)</p>
           </DialogHeader>
           <div className="space-y-1">
-            <p className="text-white/50 text-sm mb-4">Galería</p>
-
+            {/* Gallery Option */}
             <button
-              onClick={() => handleImportFile('image/*,video/*')}
-              className="flex items-center gap-4 w-full px-4 py-3 rounded-xl hover:bg-white/5 transition-colors"
+              onClick={handleImportFromGallery}
+              className="flex items-center gap-4 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
             >
-              <div className="w-10 h-10 rounded-xl bg-[#e94560]/20 flex items-center justify-center">
-                <ImageIcon size={20} className="text-[#e94560]" />
+              <div className="w-12 h-12 rounded-xl bg-[#e94560]/20 flex items-center justify-center">
+                <ImageIcon size={22} className="text-[#e94560]" />
               </div>
-              <div className="text-left">
-                <p className="text-white text-sm font-medium">Fotos y videos</p>
+              <div className="text-left flex-1">
+                <p className="text-white text-sm font-medium">Desde Galería</p>
+                <p className="text-white/40 text-xs">Selecciona fotos y videos de tu galería</p>
               </div>
+              <ChevronRight size={16} className="text-white/20" />
             </button>
 
+            {/* Camera Photo Option */}
             <button
-              onClick={() => handleImportFile('image/*')}
-              className="flex items-center gap-4 w-full px-4 py-3 rounded-xl hover:bg-white/5 transition-colors"
+              onClick={handleImportFromCamera}
+              className="flex items-center gap-4 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
             >
-              <div className="w-10 h-10 rounded-xl bg-green-500/20 flex items-center justify-center">
-                <Camera size={20} className="text-green-400" />
+              <div className="w-12 h-12 rounded-xl bg-green-500/20 flex items-center justify-center">
+                <Camera size={22} className="text-green-400" />
               </div>
-              <div className="text-left">
-                <p className="text-white text-sm font-medium">Foto</p>
+              <div className="text-left flex-1">
+                <p className="text-white text-sm font-medium">Tomar Foto</p>
+                <p className="text-white/40 text-xs">Abre la cámara para tomar una foto</p>
               </div>
+              <ChevronRight size={16} className="text-white/20" />
             </button>
 
+            {/* Camera Video Option */}
             <button
-              onClick={() => handleImportFile('image/*', 'environment')}
-              className="flex items-center gap-4 w-full px-4 py-3 rounded-xl hover:bg-white/5 transition-colors"
+              onClick={handleImportVideoFromCamera}
+              className="flex items-center gap-4 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
             >
-              <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
-                <Camera size={20} className="text-blue-400" />
+              <div className="w-12 h-12 rounded-xl bg-blue-500/20 flex items-center justify-center">
+                <Video size={22} className="text-blue-400" />
               </div>
-              <div className="text-left">
-                <p className="text-white text-sm font-medium">Abrir cámara</p>
+              <div className="text-left flex-1">
+                <p className="text-white text-sm font-medium">Grabar Video</p>
+                <p className="text-white/40 text-xs">Abre la cámara para grabar un video</p>
               </div>
+              <ChevronRight size={16} className="text-white/20" />
             </button>
 
-            <p className="text-white/50 text-sm mt-4 mb-2">Archivos</p>
-
+            {/* Files Option */}
             <button
-              onClick={handleImportAnyFile}
-              className="flex items-center gap-4 w-full px-4 py-3 rounded-xl hover:bg-white/5 transition-colors"
+              onClick={handleImportFromFiles}
+              className="flex items-center gap-4 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
             >
-              <div className="w-10 h-10 rounded-xl bg-purple-500/20 flex items-center justify-center">
-                <FolderOpen size={20} className="text-purple-400" />
+              <div className="w-12 h-12 rounded-xl bg-purple-500/20 flex items-center justify-center">
+                <FolderOpen size={22} className="text-purple-400" />
               </div>
-              <div className="text-left">
-                <p className="text-white text-sm font-medium">Explorar archivos</p>
+              <div className="text-left flex-1">
+                <p className="text-white text-sm font-medium">Desde Archivos</p>
+                <p className="text-white/40 text-xs">Explora y selecciona archivos de tu dispositivo</p>
               </div>
+              <ChevronRight size={16} className="text-white/20" />
             </button>
+          </div>
+
+          {/* Max files notice */}
+          <div className="mt-4 flex items-center gap-2 justify-center">
+            <Smartphone size={14} className="text-white/20" />
+            <p className="text-white/20 text-xs">Máximo {MAX_FILES_PER_EXPORT} archivos por exportación</p>
           </div>
         </DialogContent>
       </Dialog>

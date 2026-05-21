@@ -38,7 +38,47 @@ export default function HomePage() {
       try {
         const user = await getCurrentUser();
         if (user) {
-          // Check if user is blocked
+          // Check if user is blocked - refresh from server
+          try {
+            const res = await fetch('/api/users');
+            if (res.ok) {
+              const serverUsers = await res.json() as Array<{ id: string; username: string; pin: string; role: string; blocked?: boolean; email?: string; createdAt: string }>;
+              const serverUser = serverUsers.find((u) => u.id === user.id || u.username === user.username);
+              if (serverUser) {
+                // Update local user data from server
+                const updatedUser: LocalUser = {
+                  id: serverUser.id,
+                  username: serverUser.username,
+                  email: serverUser.email,
+                  pin: serverUser.pin,
+                  role: serverUser.role,
+                  blocked: serverUser.blocked,
+                  createdAt: serverUser.createdAt,
+                };
+                await saveUser(updatedUser);
+
+                if (updatedUser.blocked) {
+                  await logoutUser();
+                  setError('Cuenta bloqueada');
+                  setScreen('login');
+                  return;
+                }
+
+                setCurrentUserState(updatedUser);
+                if (updatedUser.role === 'superadmin') {
+                  setScreen('superadmin');
+                } else if (updatedUser.role === 'admin') {
+                  setScreen('admin');
+                } else {
+                  setScreen('vault');
+                }
+                return;
+              }
+            }
+          } catch {
+            // Server not available, use local data
+          }
+
           if (user.blocked) {
             setError('Cuenta bloqueada');
             setScreen('login');
@@ -67,7 +107,16 @@ export default function HomePage() {
     fetch('/api/seed', { method: 'POST' }).catch(() => {});
   }, []);
 
+  // Process sync queue on mount
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      processQueue().catch(() => {});
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [processQueue]);
+
   // Login with email (username) + password (PIN)
+  // Admin and superadmin use the SAME login form
   const handleLogin = async (email: string, password: string) => {
     setError('');
     try {
@@ -83,6 +132,47 @@ export default function HomePage() {
         if (localUser.pin === hashedPassword) {
           await setCurrentUser(localUser.id);
           setCurrentUserState(localUser);
+
+          // Try to sync with server to get latest role/blocked status
+          try {
+            const res = await fetch('/api/users');
+            if (res.ok) {
+              const serverUsers = await res.json() as Array<{ id: string; username: string; pin: string; role: string; blocked?: boolean; email?: string; createdAt: string }>;
+              const serverUser = serverUsers.find((u) => u.username === email);
+              if (serverUser) {
+                const updatedUser: LocalUser = {
+                  id: serverUser.id,
+                  username: serverUser.username,
+                  email: serverUser.email,
+                  pin: serverUser.pin,
+                  role: serverUser.role,
+                  blocked: serverUser.blocked,
+                  createdAt: serverUser.createdAt,
+                };
+                await saveUser(updatedUser);
+                setCurrentUserState(updatedUser);
+
+                if (updatedUser.blocked) {
+                  await logoutUser();
+                  setError('Cuenta bloqueada.');
+                  setScreen('login');
+                  return;
+                }
+
+                if (updatedUser.role === 'superadmin') {
+                  setScreen('superadmin');
+                } else if (updatedUser.role === 'admin') {
+                  setScreen('admin');
+                } else {
+                  setScreen('vault');
+                }
+                return;
+              }
+            }
+          } catch {
+            // Server unavailable, use local data
+          }
+
           if (localUser.role === 'superadmin') {
             setScreen('superadmin');
           } else if (localUser.role === 'admin') {
@@ -99,7 +189,7 @@ export default function HomePage() {
 
       // If not found locally, check server
       try {
-        const res = await fetch(`/api/users`);
+        const res = await fetch('/api/users');
         if (res.ok) {
           const users = await res.json() as Array<{ id: string; username: string; pin: string; role: string; blocked?: boolean; email?: string; createdAt: string }>;
           const serverUser = users.find(
@@ -142,6 +232,7 @@ export default function HomePage() {
     }
   };
 
+  // Admin login via long-press help button (alternative access)
   const handleAdminLogin = async (username: string, pin: string) => {
     setError('');
     try {
@@ -170,7 +261,7 @@ export default function HomePage() {
 
       // Check server
       try {
-        const res = await fetch(`/api/users`);
+        const res = await fetch('/api/users');
         if (res.ok) {
           const users = await res.json() as Array<{ id: string; username: string; pin: string; role: string; blocked?: boolean; email?: string; createdAt: string }>;
           const serverUser = users.find(
@@ -237,7 +328,7 @@ export default function HomePage() {
       await setCurrentUser(newUser.id);
       setCurrentUserState(newUser);
 
-      // Sync to server
+      // Try to sync to server immediately
       syncUser(newUser).catch(() => {});
       processQueue().catch(() => {});
 
