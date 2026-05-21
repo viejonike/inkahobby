@@ -1,0 +1,28 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String     @id @default(cuid())
+  username  String     @unique
+  pin       String
+  role      String     @default("user")
+  createdAt DateTime   @default(now())
+  files     VaultFile[]
+}
+
+model VaultFile {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String   // "photo" or "video"
+  data      String   // base64 encoded
+  thumbnail String?  // base64 thumbnail
+  createdAt DateTime @default(now())
+  synced    Boolean  @default(false)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
