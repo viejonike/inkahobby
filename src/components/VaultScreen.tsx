@@ -24,6 +24,7 @@ import {
   Check,
   X,
   Play,
+  Save,
 } from 'lucide-react';
 import type { LocalUser, VaultFile } from '@/lib/storage';
 import {
@@ -42,12 +43,14 @@ interface VaultScreenProps {
   user: LocalUser;
   onLogout: () => void;
   onAutoLock: () => void;
+  isExportingRef: React.MutableRefObject<boolean>;
 }
 
 const MAX_FILES_PER_IMPORT = 50;
+const MAX_FILES_PER_EXPORT = 50;
 type CategoryFilter = 'Todos' | 'Fotos' | 'Videos' | 'Archivos';
 
-export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenProps) {
+export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef }: VaultScreenProps) {
   const [files, setFiles] = useState<(VaultFile & { userId: string })[]>([]);
   const [showImportSheet, setShowImportSheet] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -61,19 +64,20 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showExportSheet, setShowExportSheet] = useState(false);
   const [pressDurationVal, setPressDurationVal] = useState(getPressDuration());
   const lastActivityRef = useRef<number>(Date.now());
 
-  // Auto-lock after 5 minutes of inactivity
+  // Auto-lock after 5 minutes of inactivity (but not during export)
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
-      if (now - lastActivityRef.current > 5 * 60 * 1000) {
+      if (!isExportingRef.current && now - lastActivityRef.current > 5 * 60 * 1000) {
         onAutoLock();
       }
     }, 10000);
     return () => clearInterval(interval);
-  }, [onAutoLock]);
+  }, [onAutoLock, isExportingRef]);
 
   const recordActivity = useCallback(() => {
     lastActivityRef.current = Date.now();
@@ -198,6 +202,9 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
     multiple?: boolean;
     capture?: string;
   }) => {
+    // Set exporting flag to prevent auto-lock while file picker is open
+    isExportingRef.current = true;
+
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = options.accept;
@@ -217,6 +224,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
       if (!fileList || fileList.length === 0) {
         // Cleanup when user cancels
         document.body.removeChild(input);
+        isExportingRef.current = false;
         return;
       }
 
@@ -229,6 +237,10 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
 
       await processFiles(fileList);
       document.body.removeChild(input);
+      // Reset exporting flag after a short delay to allow app to stabilize
+      setTimeout(() => {
+        isExportingRef.current = false;
+      }, 1000);
     };
 
     // Cleanup when user cancels file picker
@@ -237,12 +249,13 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
         if (document.body.contains(input)) {
           document.body.removeChild(input);
         }
+        isExportingRef.current = false;
       }, 1000);
     };
     input.addEventListener('cancel', onCancelHandler);
 
     input.click();
-  }, [processFiles]);
+  }, [processFiles, isExportingRef]);
 
   const handleImportFromGallery = () => {
     openFileInput({ accept: 'image/*,video/*', multiple: true });
@@ -280,38 +293,133 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
     setShowDeleteConfirm(false);
   };
 
-  // Batch export - export to gallery and auto-delete from app
-  const handleBatchExport = async () => {
-    const filesToExport = files.filter(f => selectedIds.has(f.id));
-    for (const file of filesToExport) {
-      const link = document.createElement('a');
-      link.href = file.data;
-      const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
-      link.download = `${file.type}_${file.id.slice(0, 8)}.${extension}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+  // Batch export - save selected files to device
+  const handleBatchExport = async (exportType: 'gallery' | 'files') => {
+    const filesToExport = files.filter(f => selectedIds.has(f.id)).slice(0, MAX_FILES_PER_EXPORT);
+    if (filesToExport.length === 0) return;
+
+    isExportingRef.current = true;
+    setShowExportSheet(false);
+
+    try {
+      if (exportType === 'gallery' && navigator.share && filesToExport.length === 1) {
+        // Use Web Share API for single file to gallery
+        const file = filesToExport[0];
+        const response = await fetch(file.data);
+        const blob = await response.blob();
+        const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
+        const mimeType = file.type === 'photo' ? 'image/jpeg' : file.type === 'video' ? 'video/mp4' : 'application/octet-stream';
+        const webFile = new File([blob], `${file.type}_${file.id.slice(0, 8)}.${extension}`, { type: mimeType });
+
+        try {
+          await navigator.share({
+            files: [webFile],
+          });
+        } catch {
+          // User cancelled or share failed, fall back to download
+          const link = document.createElement('a');
+          link.href = file.data;
+          link.download = `${file.type}_${file.id.slice(0, 8)}.${extension}`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
+      } else {
+        // Download multiple files
+        for (const file of filesToExport) {
+          const link = document.createElement('a');
+          link.href = file.data;
+          const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
+          link.download = `${file.type}_${file.id.slice(0, 8)}.${extension}`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          // Small delay between downloads to prevent browser blocking
+          if (filesToExport.indexOf(file) < filesToExport.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+        }
+      }
+
       // Auto-delete from app after export
-      await deleteVaultFile(file.id);
+      for (const file of filesToExport) {
+        await deleteVaultFile(file.id);
+      }
+      await loadFiles();
+      setSelectedIds(new Set());
+      setSelectionMode(false);
+
+      toast({
+        title: 'Exportados',
+        description: `${filesToExport.length} archivo${filesToExport.length !== 1 ? 's' : ''} exportado${filesToExport.length !== 1 ? 's' : ''} y eliminado${filesToExport.length !== 1 ? 's' : ''} de la galería`,
+      });
+    } catch (err) {
+      console.error('Error exporting files:', err);
+      toast({
+        title: 'Error al exportar',
+        description: 'No se pudieron exportar algunos archivos',
+        variant: 'destructive',
+      });
+    } finally {
+      setTimeout(() => {
+        isExportingRef.current = false;
+      }, 1000);
     }
-    await loadFiles();
-    setSelectedIds(new Set());
-    setSelectionMode(false);
-    toast({
-      title: 'Exportados',
-      description: `${filesToExport.length} archivo${filesToExport.length !== 1 ? 's' : ''} exportado${filesToExport.length !== 1 ? 's' : ''} y eliminado${filesToExport.length !== 1 ? 's' : ''} de la galería`,
-    });
   };
 
   // Export single file from viewer
   const handleViewerExport = async (file: VaultFile & { userId: string }) => {
-    // Auto-delete after export
-    await deleteVaultFile(file.id);
-    await loadFiles();
-    toast({
-      title: 'Exportado',
-      description: 'Archivo exportado y eliminado de la galería',
-    });
+    isExportingRef.current = true;
+
+    try {
+      const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
+      const mimeType = file.type === 'photo' ? 'image/jpeg' : file.type === 'video' ? 'video/mp4' : 'application/octet-stream';
+
+      // Try Web Share API first (saves to gallery on mobile)
+      if (navigator.share) {
+        try {
+          const response = await fetch(file.data);
+          const blob = await response.blob();
+          const webFile = new File([blob], `${file.type}_${file.id.slice(0, 8)}.${extension}`, { type: mimeType });
+          await navigator.share({
+            files: [webFile],
+          });
+        } catch {
+          // Fallback to download
+          const link = document.createElement('a');
+          link.href = file.data;
+          link.download = `${file.type}_${file.id.slice(0, 8)}.${extension}`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
+      } else {
+        const link = document.createElement('a');
+        link.href = file.data;
+        link.download = `${file.type}_${file.id.slice(0, 8)}.${extension}`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+
+      // Auto-delete after export
+      await deleteVaultFile(file.id);
+      await loadFiles();
+      toast({
+        title: 'Exportado',
+        description: 'Archivo exportado y eliminado de la galería',
+      });
+    } catch {
+      toast({
+        title: 'Error al exportar',
+        description: 'No se pudo exportar el archivo',
+        variant: 'destructive',
+      });
+    } finally {
+      setTimeout(() => {
+        isExportingRef.current = false;
+      }, 1000);
+    }
   };
 
   // Long press to enter selection mode
@@ -416,7 +524,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
           {selectionMode ? (
             <>
               <button
-                onClick={handleBatchExport}
+                onClick={() => setShowExportSheet(true)}
                 disabled={selectedIds.size === 0}
                 className="text-green-400/70 hover:text-green-400 transition-colors p-2 disabled:opacity-30"
                 title="Exportar seleccionados"
@@ -697,6 +805,55 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
         </DialogContent>
       </Dialog>
 
+      {/* Export Options Sheet - for batch export */}
+      <Dialog open={showExportSheet} onOpenChange={setShowExportSheet}>
+        <DialogContent className="bg-[#1a1a2e] border-t border-white/10 rounded-t-3xl max-w-lg fixed bottom-0 left-0 right-0 translate-x-0 -translate-y-0 top-auto data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom duration-300 p-6 pb-10">
+          <DialogHeader className="mb-4">
+            <DialogTitle className="text-white text-lg flex items-center gap-2">
+              <Download size={20} className="text-green-400" />
+              Exportar {selectedIds.size} archivo{selectedIds.size !== 1 ? 's' : ''}
+            </DialogTitle>
+            <p className="text-white/40 text-xs mt-1">
+              Los archivos se eliminarán de InkaHobby después de exportar
+            </p>
+          </DialogHeader>
+          <div className="space-y-1">
+            <button
+              onClick={() => handleBatchExport('gallery')}
+              className="flex items-center gap-4 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
+            >
+              <div className="w-12 h-12 rounded-xl bg-[#e94560]/20 flex items-center justify-center">
+                <ImageIcon size={22} className="text-[#e94560]" />
+              </div>
+              <div className="text-left flex-1">
+                <p className="text-white text-sm font-medium">Guardar en Galería</p>
+                <p className="text-white/40 text-xs">Guarda las fotos/videos en la galería del teléfono</p>
+              </div>
+              <ChevronRight size={16} className="text-white/20" />
+            </button>
+
+            <button
+              onClick={() => handleBatchExport('files')}
+              className="flex items-center gap-4 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
+            >
+              <div className="w-12 h-12 rounded-xl bg-yellow-500/20 flex items-center justify-center">
+                <FolderOpen size={22} className="text-yellow-400" />
+              </div>
+              <div className="text-left flex-1">
+                <p className="text-white text-sm font-medium">Guardar en Archivos</p>
+                <p className="text-white/40 text-xs">Descarga los archivos al almacenamiento del teléfono</p>
+              </div>
+              <ChevronRight size={16} className="text-white/20" />
+            </button>
+          </div>
+
+          <div className="mt-4 flex items-center gap-2 justify-center">
+            <Smartphone size={14} className="text-white/20" />
+            <p className="text-white/20 text-xs">Máximo {MAX_FILES_PER_EXPORT} archivos por exportación</p>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Gallery Viewer */}
       {showViewer && filteredFiles.length > 0 && (
         <GalleryViewer
@@ -706,6 +863,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
           onExport={handleViewerExport}
           onDelete={handleDeleteFile}
           canDelete={true}
+          isExportingRef={isExportingRef}
         />
       )}
 

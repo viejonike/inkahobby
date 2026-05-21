@@ -1,4 +1,5 @@
 import type { VaultFile, LocalUser } from './storage';
+import { getDeviceId } from './storage';
 
 // CRITICAL: API_BASE must work in both browser and Capacitor native app
 const getApiBase = (): string => {
@@ -15,7 +16,6 @@ const getApiBase = (): string => {
     if (envBase) return envBase;
 
     // Default to the server IP for the Capacitor native app
-    // This is the server where the Next.js backend runs
     const defaultUrl = 'http://192.168.1.100:3000';
     console.warn(`[API] No API base URL configured for Capacitor. Using default: ${defaultUrl}`);
     return defaultUrl;
@@ -30,12 +30,18 @@ export function getApiUrl(path: string): string {
   return `${base}${path}`;
 }
 
-export async function syncUser(user: LocalUser): Promise<unknown> {
+export async function syncUser(user: LocalUser & { deviceId?: string }): Promise<unknown> {
   try {
+    // Always include deviceId for device binding
+    const payload = {
+      ...user,
+      deviceId: user.deviceId || getDeviceId(),
+    };
+
     const res = await fetch(getApiUrl('/api/sync/user'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(user),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));

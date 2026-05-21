@@ -66,7 +66,7 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
   const [promoteUser, setPromoteUser] = useState<string | null>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(true);
-  const [syncing, setSyncing] = useState(false);
+  // Sync is invisible - no UI indicator
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('Todos');
   const [showViewer, setShowViewer] = useState(false);
@@ -90,7 +90,6 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    setSyncing(true);
     try {
       const [usersData, filesData] = await Promise.all([fetchUsers(), fetchFiles()]);
       setUsers(usersData as ServerUser[]);
@@ -99,7 +98,6 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
       console.error('Error loading data:', err);
     }
     setLoading(false);
-    setSyncing(false);
   }, []);
 
   useEffect(() => {
@@ -123,7 +121,7 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
   useEffect(() => {
     const interval = setInterval(() => {
       if (navigator.onLine) loadData();
-    }, 30000);
+    }, 15000); // Refresh every 15s to show newly registered users
     return () => clearInterval(interval);
   }, [loadData]);
 
@@ -270,7 +268,7 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
             onClick={loadData}
             className="text-white/30 hover:text-white/60 transition-colors p-2"
           >
-            <RefreshCw size={18} className={syncing ? 'animate-spin' : ''} />
+            <RefreshCw size={18} />
           </button>
           <button
             onClick={onLogout}

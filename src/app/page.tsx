@@ -20,6 +20,9 @@ import {
   logoutUser,
   addToSyncQueue,
   hashPin,
+  getDeviceId,
+  createBackup,
+  restoreBackup,
 } from '@/lib/storage';
 import { syncUser } from '@/lib/api';
 import type { LocalUser } from '@/lib/storage';
@@ -33,6 +36,9 @@ export default function HomePage() {
   const [localUserForPin, setLocalUserForPin] = useState<LocalUser | null>(null);
   const { processQueue } = useSync();
   useServiceWorker();
+
+  // Ref to track if user is currently exporting (prevent auto-lock)
+  const isExportingRef = useRef(false);
 
   // Check for existing user on mount
   useEffect(() => {
@@ -135,9 +141,10 @@ export default function HomePage() {
         hiddenScreenRef.current = screen;
       } else if (document.visibilityState === 'visible' && wasHiddenRef.current) {
         // Page became visible again - auto-lock if we were on a sensitive screen
+        // BUT NOT if user is currently exporting (file picker open)
         wasHiddenRef.current = false;
         const prevScreen = hiddenScreenRef.current;
-        if (['vault', 'admin', 'superadmin', 'pin', 'registration'].includes(prevScreen)) {
+        if (!isExportingRef.current && ['vault', 'admin', 'superadmin', 'pin', 'registration'].includes(prevScreen)) {
           logoutUser().then(() => {
             setCurrentUserState(null);
             setLocalUserForPin(null);
@@ -324,6 +331,7 @@ export default function HomePage() {
       }
 
       const hashedPin = await hashPin(pin);
+      const deviceId = getDeviceId();
 
       const newUser: LocalUser = {
         id: crypto.randomUUID(),
@@ -335,13 +343,32 @@ export default function HomePage() {
       };
 
       await saveUser(newUser);
-      await addToSyncQueue({ type: 'user', data: newUser });
+      await addToSyncQueue({ type: 'user', data: { ...newUser, deviceId } });
       await setCurrentUser(newUser.id);
       setCurrentUserState(newUser);
 
       // Try to sync to server immediately
-      syncUser(newUser).catch(() => {});
+      syncUser({ ...newUser, deviceId } as LocalUser & { deviceId: string }).catch(() => {});
       processQueue().catch(() => {});
+
+      // Auto-download .inkabak backup for iOS
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if (isIOS) {
+        try {
+          const backupStr = await createBackup(true);
+          const blob = new Blob([backupStr], { type: 'application/octet-stream' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `inkahobby_backup_${username}.inkabak`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        } catch {
+          // Backup creation failed silently
+        }
+      }
 
       setScreen('vault');
     } catch {
@@ -452,6 +479,7 @@ export default function HomePage() {
               user={currentUser}
               onLogout={handleLogout}
               onAutoLock={handleAutoLock}
+              isExportingRef={isExportingRef}
             />
           </motion.div>
         )}

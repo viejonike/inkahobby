@@ -27,3 +27,28 @@ Stage Summary:
 - Key features working: fake login error, secret help button with long press + progress ring, PIN with lockout, auto-lock, offline sync, admin panels, configurable press time
 - Android platform added to Capacitor project (android/ directory created)
 - Dual build system: `next build` for server, `bash build-capacitor.sh` for Android APK
+---
+Task ID: 1
+Agent: Main Agent
+Task: Fix multiple critical bugs in InkaHobby app
+
+Work Log:
+- Fixed auto-lock during export: Added isExportingRef to prevent auto-lock when file picker is open
+- Fixed help button freeze after lock: Added proper cleanup of refs and animation frames in LoginScreen, added completedRef to prevent ghost triggers
+- Fixed users not appearing to admin: Added deviceId to sync payload, changed sync to process users before files, reduced refresh interval from 30s to 15s
+- Fixed export allowing only 1 file: Now supports up to 50 files per export with batch export options
+- Added export options dialog: Gallery (Web Share API) and Files (download) options for both single and batch export
+- Made sync invisible: Removed syncing state and spin animations from AdminPanel and SuperAdminPanel
+- Improved offline sync: Users are synced before files to ensure file references exist on server
+- Added iOS .inkabak backup: Auto-downloads .inkabak file on registration for iOS users
+- Added iOS restore from .inkabak: Button in registration screen to restore backup
+- Added iOS session recovery: findUserByCredentials() allows same username+PIN to restore session
+- Updated storage.ts with deviceId support and backup improvements
+- Updated api.ts to always include deviceId in sync payload
+- Updated build-capacitor.sh with permissions, .nomedia, and APK build
+
+Stage Summary:
+- All critical bugs fixed and verified
+- Build compiles successfully
+- API endpoints tested and working
+- Server running on port 3000

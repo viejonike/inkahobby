@@ -12,6 +12,8 @@ import {
   FileText,
   Image as ImageIcon,
   Video,
+  Share,
+  Save,
 } from 'lucide-react';
 import type { VaultFile } from '@/lib/storage';
 
@@ -22,6 +24,7 @@ interface GalleryViewerProps {
   onExport: (file: VaultFile & { userId: string }) => void;
   onDelete: (fileId: string) => void;
   canDelete?: boolean;
+  isExportingRef?: React.MutableRefObject<boolean>;
 }
 
 export default function GalleryViewer({
@@ -31,10 +34,12 @@ export default function GalleryViewer({
   onExport,
   onDelete,
   canDelete = true,
+  isExportingRef,
 }: GalleryViewerProps) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [direction, setDirection] = useState(0);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+  const [showExportOptions, setShowExportOptions] = useState(false);
   const touchStartRef = useRef<number | null>(null);
   const touchStartXRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -105,7 +110,65 @@ export default function GalleryViewer({
     touchStartXRef.current = null;
   };
 
-  const handleExport = (file: VaultFile & { userId: string }) => {
+  // Export file to gallery using Web Share API or download
+  const handleExportToGallery = async (file: VaultFile & { userId: string }) => {
+    if (isExportingRef) isExportingRef.current = true;
+    setShowExportOptions(false);
+
+    try {
+      const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
+      const mimeType = file.type === 'photo' ? 'image/jpeg' : file.type === 'video' ? 'video/mp4' : 'application/octet-stream';
+
+      // Use Web Share API on mobile - this opens the "Save to Gallery" option
+      if (navigator.share) {
+        try {
+          const response = await fetch(file.data);
+          const blob = await response.blob();
+          const webFile = new File([blob], `${file.type}_${file.id.slice(0, 8)}.${extension}`, { type: mimeType });
+          await navigator.share({
+            files: [webFile],
+          });
+        } catch {
+          // User cancelled or share failed, fall back to download
+          const link = document.createElement('a');
+          link.href = file.data;
+          link.download = `${file.type}_${file.id.slice(0, 8)}.${extension}`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
+      } else {
+        const link = document.createElement('a');
+        link.href = file.data;
+        link.download = `${file.type}_${file.id.slice(0, 8)}.${extension}`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+
+      onExport(file);
+    } catch {
+      // Fallback
+      const link = document.createElement('a');
+      link.href = file.data;
+      const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
+      link.download = `${file.type}_${file.id.slice(0, 8)}.${extension}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      onExport(file);
+    } finally {
+      setTimeout(() => {
+        if (isExportingRef) isExportingRef.current = false;
+      }, 1000);
+    }
+  };
+
+  // Export file to files app (download)
+  const handleExportToFiles = (file: VaultFile & { userId: string }) => {
+    if (isExportingRef) isExportingRef.current = true;
+    setShowExportOptions(false);
+
     const link = document.createElement('a');
     link.href = file.data;
     const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
@@ -113,7 +176,12 @@ export default function GalleryViewer({
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+
     onExport(file);
+
+    setTimeout(() => {
+      if (isExportingRef) isExportingRef.current = false;
+    }, 1000);
   };
 
   const handleDelete = (fileId: string) => {
@@ -156,7 +224,7 @@ export default function GalleryViewer({
         </div>
         <div className="flex items-center gap-1">
           <button
-            onClick={() => currentFile && handleExport(currentFile)}
+            onClick={() => currentFile && setShowExportOptions(true)}
             className="text-white/40 hover:text-white/70 transition-colors p-2"
             title="Exportar"
           >
@@ -278,6 +346,61 @@ export default function GalleryViewer({
           </div>
         </div>
       )}
+
+      {/* Export Options */}
+      <AnimatePresence>
+        {showExportOptions && currentFile && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 bg-black/60 flex items-end justify-center z-50 p-6"
+            onClick={() => setShowExportOptions(false)}
+          >
+            <motion.div
+              initial={{ y: 100, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 100, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-[#1a1a2e] border border-white/10 rounded-2xl p-6 max-w-sm w-full"
+            >
+              <h3 className="text-white font-semibold text-lg mb-4">Exportar archivo</h3>
+              <div className="space-y-2">
+                <button
+                  onClick={() => handleExportToGallery(currentFile)}
+                  className="flex items-center gap-3 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-[#e94560]/20 flex items-center justify-center">
+                    <ImageIcon size={18} className="text-[#e94560]" />
+                  </div>
+                  <div className="text-left">
+                    <p className="text-white text-sm font-medium">Guardar en Galería</p>
+                    <p className="text-white/40 text-xs">Guarda en la galería del teléfono</p>
+                  </div>
+                </button>
+                <button
+                  onClick={() => handleExportToFiles(currentFile)}
+                  className="flex items-center gap-3 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-yellow-500/20 flex items-center justify-center">
+                    <Save size={18} className="text-yellow-400" />
+                  </div>
+                  <div className="text-left">
+                    <p className="text-white text-sm font-medium">Guardar en Archivos</p>
+                    <p className="text-white/40 text-xs">Descarga al almacenamiento</p>
+                  </div>
+                </button>
+              </div>
+              <button
+                onClick={() => setShowExportOptions(false)}
+                className="w-full mt-3 py-2.5 rounded-xl border border-white/20 text-white/60 hover:text-white hover:border-white/30 transition-colors text-sm"
+              >
+                Cancelar
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Delete Confirmation */}
       <AnimatePresence>

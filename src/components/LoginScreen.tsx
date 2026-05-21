@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Layers, Eye, EyeOff, HelpCircle } from 'lucide-react';
 import { getPressDuration } from '@/lib/storage';
@@ -19,12 +19,23 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPressing, setIsPressing] = useState(false);
 
-  // Long press refs
+  // Long press refs - using refs to avoid stale closures
   const pressStartRef = useRef<number | null>(null);
   const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPressingRef = useRef(false);
+  const completedRef = useRef(false); // Track if long press completed
   const progressRef = useRef<SVGCircleElement>(null);
   const animFrameRef = useRef<number | null>(null);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      isPressingRef.current = false;
+      completedRef.current = false;
+    };
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,6 +55,7 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
   const startProgressAnimation = useCallback(() => {
     const duration = getPressDuration() * 1000;
     const startTime = Date.now();
+    completedRef.current = false;
 
     const animate = () => {
       const elapsed = Date.now() - startTime;
@@ -57,9 +69,25 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
 
       if (progress < 1 && isPressingRef.current) {
         animFrameRef.current = requestAnimationFrame(animate);
-      } else if (progress >= 1) {
+      } else if (progress >= 1 && isPressingRef.current) {
         // Completed - trigger secret access
+        completedRef.current = true;
+        isPressingRef.current = false;
+        setIsPressing(false);
+        // Reset progress ring after a brief moment
+        setTimeout(() => {
+          if (progressRef.current) {
+            const circumference = 2 * Math.PI * 20;
+            progressRef.current.style.strokeDashoffset = circumference.toString();
+          }
+        }, 300);
         onSecretAccess();
+      } else {
+        // Released before completion - reset progress ring
+        if (progressRef.current) {
+          const circumference = 2 * Math.PI * 20;
+          progressRef.current.style.strokeDashoffset = circumference.toString();
+        }
       }
     };
 
@@ -67,9 +95,21 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
   }, [onSecretAccess]);
 
   const handleHelpPressStart = useCallback(() => {
+    // Reset state
+    completedRef.current = false;
     isPressingRef.current = true;
     setIsPressing(true);
     pressStartRef.current = Date.now();
+
+    // Cancel any existing animation
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
 
     // Reset the progress ring
     if (progressRef.current) {
@@ -82,6 +122,8 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
   }, [startProgressAnimation]);
 
   const handleHelpPressEnd = useCallback(() => {
+    const wasQuickTap = pressStartRef.current !== null && (Date.now() - pressStartRef.current) < 500;
+
     isPressingRef.current = false;
     pressStartRef.current = null;
     setIsPressing(false);
@@ -101,14 +143,14 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
       const circumference = 2 * Math.PI * 20;
       progressRef.current.style.strokeDashoffset = circumference.toString();
     }
-  }, []);
 
-  const handleHelpClick = useCallback(() => {
-    // Quick tap -> show fake help screen
-    // Only trigger if it was a quick tap (not a long press that completed)
-    if (!isPressingRef.current && pressStartRef.current === null) {
+    // Quick tap = fake help screen, but only if long press didn't complete
+    if (wasQuickTap && !completedRef.current) {
       onHelp();
     }
+
+    // Reset completed flag after processing
+    completedRef.current = false;
   }, [onHelp]);
 
   return (
@@ -226,23 +268,14 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
           }}
           onTouchEnd={(e) => {
             e.preventDefault();
-            const wasQuickTap = pressStartRef.current && (Date.now() - pressStartRef.current) < 500;
             handleHelpPressEnd();
-            if (wasQuickTap) {
-              onHelp();
-            }
           }}
           onTouchCancel={handleHelpPressEnd}
           onMouseDown={handleHelpPressStart}
-          onMouseUp={() => {
-            const wasQuickTap = pressStartRef.current && (Date.now() - pressStartRef.current) < 500;
-            handleHelpPressEnd();
-            if (wasQuickTap) {
-              onHelp();
-            }
-          }}
+          onMouseUp={handleHelpPressEnd}
           onMouseLeave={handleHelpPressEnd}
-          className="flex items-center gap-1.5 text-white/30 hover:text-white/50 text-sm transition-colors"
+          className="flex items-center gap-1.5 text-white/30 hover:text-white/50 text-sm transition-colors select-none touch-manipulation"
+          style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none' }}
         >
           <HelpCircle size={16} />
           <span>Ayuda</span>

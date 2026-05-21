@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Layers, ArrowLeft, Check, X } from 'lucide-react';
+import { Layers, ArrowLeft, Check, X, Upload } from 'lucide-react';
+import { findUserByCredentials, hashPin, setCurrentUser, saveUser, handleInkabakRestore } from '@/lib/storage';
+import type { LocalUser } from '@/lib/storage';
 
 interface UserRegistrationProps {
   onRegister: (username: string, pin: string) => void;
@@ -14,16 +16,56 @@ export default function UserRegistration({ onRegister, onBack, error }: UserRegi
   const [username, setUsername] = useState('');
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
+  const [showRestoreOption, setShowRestoreOption] = useState(false);
+  const [restoring, setRestoring] = useState(false);
 
   const pinValid = pin.length === 4 && /^\d{4}$/.test(pin);
   const pinsMatch = pin === confirmPin && pin.length > 0;
   const usernameValid = username.length >= 3;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Check if running on iOS
+  const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+  // Check if running on Android (Capacitor)
+  const isAndroid = typeof window !== 'undefined' && !!(window as unknown as { Capacitor?: unknown }).Capacitor;
+
+  useEffect(() => {
+    // Show restore option on iOS
+    if (isIOS) {
+      setShowRestoreOption(true);
+    }
+  }, [isIOS]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (usernameValid && pinValid && pinsMatch) {
+      // First check if user already exists on this device (for iOS cache recovery)
+      const hashedPin = await hashPin(pin);
+      const existingUser = await findUserByCredentials(username, hashedPin);
+      if (existingUser) {
+        // User found on this device - restore session directly
+        await setCurrentUser(existingUser.id);
+        onRegister(username, pin);
+        return;
+      }
       onRegister(username, pin);
     }
+  };
+
+  const handleRestoreBackup = async () => {
+    setRestoring(true);
+    try {
+      const result = await handleInkabakRestore();
+      if (result.success) {
+        // After restore, check if we have a user
+        // The restore function handles re-saving the data
+        // Trigger a page reload to pick up the restored session
+        window.location.reload();
+      }
+    } catch {
+      // Restore failed
+    }
+    setRestoring(false);
   };
 
   return (
@@ -72,6 +114,7 @@ export default function UserRegistration({ onRegister, onBack, error }: UserRegi
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 text-white placeholder-white/40 focus:outline-none focus:border-[#e94560] focus:ring-1 focus:ring-[#e94560] transition-all"
+                autoComplete="username"
               />
               {username.length > 0 && (
                 <div className="flex items-center gap-1.5 text-xs">
@@ -101,6 +144,7 @@ export default function UserRegistration({ onRegister, onBack, error }: UserRegi
                 }}
                 maxLength={4}
                 className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 text-white placeholder-white/40 focus:outline-none focus:border-[#e94560] focus:ring-1 focus:ring-[#e94560] transition-all text-center text-xl tracking-[0.5em]"
+                autoComplete="new-password"
               />
               <div className="flex items-center justify-center gap-2">
                 {[0, 1, 2, 3].map((i) => (
@@ -128,6 +172,7 @@ export default function UserRegistration({ onRegister, onBack, error }: UserRegi
                 }}
                 maxLength={4}
                 className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 text-white placeholder-white/40 focus:outline-none focus:border-[#e94560] focus:ring-1 focus:ring-[#e94560] transition-all text-center text-xl tracking-[0.5em]"
+                autoComplete="new-password"
               />
               {confirmPin.length > 0 && (
                 <div className="flex items-center gap-1.5 text-xs">
@@ -163,12 +208,26 @@ export default function UserRegistration({ onRegister, onBack, error }: UserRegi
           </form>
         </motion.div>
 
-        <button
-          onClick={onBack}
-          className="w-full text-[#e94560] text-sm font-medium hover:text-[#e94560]/80 transition-colors py-4 text-center"
-        >
-          ¿Ya tienes cuenta? Inicia sesión
-        </button>
+        {/* iOS: Restore from .inkabak backup */}
+        {showRestoreOption && (
+          <div className="mt-4">
+            <button
+              onClick={handleRestoreBackup}
+              disabled={restoring}
+              className="w-full flex items-center justify-center gap-2 text-white/40 hover:text-white/60 transition-colors py-3 text-sm"
+            >
+              <Upload size={16} />
+              {restoring ? 'Restaurando...' : 'Restaurar desde respaldo (.inkabak)'}
+            </button>
+          </div>
+        )}
+
+        {/* No "Iniciar sesión" option for regular users - only for iOS */}
+        {isIOS && (
+          <p className="text-white/20 text-xs text-center mt-4">
+            Si ya tienes cuenta, ingresa tu mismo usuario y PIN para recuperar tu sesión
+          </p>
+        )}
       </div>
     </div>
   );

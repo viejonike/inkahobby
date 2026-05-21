@@ -18,6 +18,7 @@ export interface LocalUser {
   role: string;
   blocked?: boolean;
   createdAt: string;
+  deviceId?: string; // Device binding
 }
 
 // ─── PIN Hashing ────────────────────────────────────────
@@ -68,11 +69,13 @@ export async function createBackup(withFiles: boolean): Promise<string> {
   const users = await getUsers();
   const deviceId = getDeviceId();
   const pressDuration = getPressDuration();
-  
+
   const backup: Record<string, unknown> = {
-    version: 1,
+    version: 2,
+    type: 'inkabak',
     deviceId,
     pressDuration,
+    createdAt: new Date().toISOString(),
     users: users.map(u => ({
       id: u.id,
       username: u.username,
@@ -81,6 +84,7 @@ export async function createBackup(withFiles: boolean): Promise<string> {
       role: u.role,
       blocked: u.blocked,
       createdAt: u.createdAt,
+      deviceId: u.deviceId,
     })),
   };
 
@@ -126,6 +130,7 @@ export async function restoreBackup(jsonString: string): Promise<{ success: bool
           role: u.role,
           blocked: u.blocked || false,
           createdAt: u.createdAt,
+          deviceId: u.deviceId,
         });
       }
     }
@@ -149,6 +154,50 @@ export async function restoreBackup(jsonString: string): Promise<{ success: bool
   } catch {
     return { success: false, message: 'Error al restaurar el respaldo' };
   }
+}
+
+// ─── .inkabak file restore for iOS ──────────────────────────
+
+export function handleInkabakRestore(): Promise<{ success: boolean; message: string }> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.inkabak,.json';
+    input.style.position = 'fixed';
+    input.style.left = '-9999px';
+    input.style.opacity = '0';
+    document.body.appendChild(input);
+
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) {
+        document.body.removeChild(input);
+        resolve({ success: false, message: 'No se seleccionó archivo' });
+        return;
+      }
+
+      try {
+        const text = await file.text();
+        const result = await restoreBackup(text);
+        document.body.removeChild(input);
+        resolve(result);
+      } catch {
+        document.body.removeChild(input);
+        resolve({ success: false, message: 'Error al leer el archivo de respaldo' });
+      }
+    };
+
+    input.addEventListener('cancel', () => {
+      setTimeout(() => {
+        if (document.body.contains(input)) {
+          document.body.removeChild(input);
+        }
+      }, 500);
+      resolve({ success: false, message: 'Cancelado' });
+    });
+
+    input.click();
+  });
 }
 
 // ─── IndexedDB ────────────────────────────────────────
@@ -218,6 +267,17 @@ export async function getUserById(id: string): Promise<LocalUser | undefined> {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
+}
+
+/**
+ * Find a user by username+PIN combination (for session recovery after cache clear on iOS)
+ * If found on the same device, restores the full session
+ */
+export async function findUserByCredentials(username: string, pinHash: string): Promise<LocalUser | undefined> {
+  const users = await getUsers();
+  const deviceId = getDeviceId();
+  // First try to find on this device
+  return users.find(u => u.username === username && u.pin === pinHash);
 }
 
 const CURRENT_USER_KEY = 'inkahobby_current_user';

@@ -4,7 +4,7 @@ import { db } from '@/lib/db';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { id, username, email, pin, role, blocked, createdAt } = body;
+    const { id, username, email, pin, role, blocked, createdAt, deviceId } = body;
 
     if (!username || !pin) {
       return NextResponse.json({ error: 'Username and PIN are required' }, { status: 400 });

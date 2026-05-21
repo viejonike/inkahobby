@@ -63,7 +63,7 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [isOnline, setIsOnline] = useState(true);
-  const [syncing, setSyncing] = useState(false);
+  // Sync is invisible - no UI indicator
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('Todos');
   const [showViewer, setShowViewer] = useState(false);
@@ -87,7 +87,6 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    setSyncing(true);
     try {
       const [usersData, filesData] = await Promise.all([fetchUsers(), fetchFiles()]);
       setUsers(usersData as ServerUser[]);
@@ -96,7 +95,6 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
       console.error('Error loading admin data:', err);
     }
     setLoading(false);
-    setSyncing(false);
   }, []);
 
   useEffect(() => {
@@ -120,7 +118,7 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
   useEffect(() => {
     const interval = setInterval(() => {
       if (navigator.onLine) loadData();
-    }, 30000);
+    }, 15000); // Refresh every 15s
     return () => clearInterval(interval);
   }, [loadData]);
 
@@ -231,7 +229,7 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
             onClick={loadData}
             className="text-white/30 hover:text-white/60 transition-colors p-2"
           >
-            <RefreshCw size={18} className={syncing ? 'animate-spin' : ''} />
+            <RefreshCw size={18} />
           </button>
           <button
             onClick={onLogout}

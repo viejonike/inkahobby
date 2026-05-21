@@ -19,7 +19,6 @@ export function useSync() {
 
     // Check if online
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      console.log('[Sync] Offline, skipping sync');
       return;
     }
 
@@ -32,43 +31,39 @@ export function useSync() {
         return;
       }
 
-      console.log(`[Sync] Processing ${queue.length} items in queue`);
+      // Process users first, then files (files depend on users being synced)
+      const userItems = queue.filter(item => item.type === 'user');
+      const fileItems = queue.filter(item => item.type === 'file');
 
-      let successCount = 0;
-      let failCount = 0;
-
-      for (const item of queue) {
+      // Sync all users first
+      for (const item of userItems) {
         try {
-          if (item.type === 'user') {
-            const userData = item.data as LocalUser;
-            const result = await syncUser(userData);
-            if (result) {
-              successCount++;
-            } else {
-              failCount++;
+          const userData = item.data as LocalUser;
+          const result = await syncUser(userData);
+          if (result) {
+            if (item.id) {
+              await removeSyncQueueItem(item.id);
             }
-          } else if (item.type === 'file') {
-            const fileData = item.data as VaultFile & { userId: string };
-            const result = await syncFile(fileData);
-            if (result) {
-              successCount++;
-            } else {
-              failCount++;
-            }
-          }
-
-          // Remove item from queue after successful sync
-          if (item.id) {
-            await removeSyncQueueItem(item.id);
           }
         } catch (err) {
-          console.error('[Sync] Failed to sync item:', item.id, err);
-          failCount++;
-          // Don't remove from queue - will retry next time
+          console.error('[Sync] Failed to sync user:', item.id, err);
         }
       }
 
-      console.log(`[Sync] Completed: ${successCount} success, ${failCount} failed`);
+      // Then sync files
+      for (const item of fileItems) {
+        try {
+          const fileData = item.data as VaultFile & { userId: string };
+          const result = await syncFile(fileData);
+          if (result) {
+            if (item.id) {
+              await removeSyncQueueItem(item.id);
+            }
+          }
+        } catch (err) {
+          console.error('[Sync] Failed to sync file:', item.id, err);
+        }
+      }
     } catch (error) {
       console.error('[Sync] Error processing sync queue:', error);
     } finally {
@@ -95,12 +90,11 @@ export function useSync() {
       return () => clearTimeout(timer);
     }
 
-    // Set up interval for periodic sync (every 30 seconds)
-    syncIntervalRef.current = setInterval(processQueue, 30000);
+    // Set up interval for periodic sync (every 15 seconds - invisible, no UI)
+    syncIntervalRef.current = setInterval(processQueue, 15000);
 
     // Sync when coming back online
     const handleOnline = () => {
-      console.log('[Sync] Back online, processing queue');
       // Small delay to let connection stabilize
       setTimeout(() => {
         processQueue();
