@@ -1,9 +1,9 @@
 const DB_NAME = 'inkahobby';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export interface VaultFile {
   id: string;
-  type: 'photo' | 'video';
+  type: 'photo' | 'video' | 'file';
   data: string; // base64
   thumbnail?: string;
   createdAt: string;

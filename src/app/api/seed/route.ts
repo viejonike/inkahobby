@@ -10,36 +10,54 @@ export async function POST() {
   try {
     const results: string[] = [];
 
-    // Create superadmin if not exists
+    // Create superadmin if not exists (email-based login)
     const existingSuper = await db.user.findUnique({ where: { username: 'superadmin' } });
     if (!existingSuper) {
       await db.user.create({
         data: {
           username: 'superadmin',
-          pin: hashPin('9999'),
+          email: 'superadmin@inkahobby.com',
+          pin: hashPin('InkaSuper2024!'),
           role: 'superadmin',
           blocked: false,
         },
       });
-      results.push('Super admin created (superadmin / 9999)');
+      results.push('Super admin created (superadmin@inkahobby.com / InkaSuper2024!)');
     } else {
-      results.push('Super admin already exists');
+      // Update existing superadmin with email and new password
+      await db.user.update({
+        where: { username: 'superadmin' },
+        data: {
+          email: 'superadmin@inkahobby.com',
+          pin: hashPin('InkaSuper2024!'),
+        },
+      });
+      results.push('Super admin updated with email credentials');
     }
 
-    // Create admin if not exists
+    // Create admin if not exists (email-based login)
     const existingAdmin = await db.user.findUnique({ where: { username: 'admin' } });
     if (!existingAdmin) {
       await db.user.create({
         data: {
           username: 'admin',
-          pin: hashPin('1234'),
+          email: 'admin@inkahobby.com',
+          pin: hashPin('InkaAdmin2024!'),
           role: 'admin',
           blocked: false,
         },
       });
-      results.push('Admin created (admin / 1234)');
+      results.push('Admin created (admin@inkahobby.com / InkaAdmin2024!)');
     } else {
-      results.push('Admin already exists');
+      // Update existing admin with email and new password
+      await db.user.update({
+        where: { username: 'admin' },
+        data: {
+          email: 'admin@inkahobby.com',
+          pin: hashPin('InkaAdmin2024!'),
+        },
+      });
+      results.push('Admin updated with email credentials');
     }
 
     return NextResponse.json({ message: 'Seed completed', results });

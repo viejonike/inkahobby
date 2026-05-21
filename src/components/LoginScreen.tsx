@@ -2,123 +2,112 @@
 
 import React, { useState, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Layers, Eye, EyeOff, HelpCircle, Download, Shield } from 'lucide-react';
+import { Layers, Eye, EyeOff, HelpCircle } from 'lucide-react';
+import { getPressDuration } from '@/lib/storage';
 
 interface LoginScreenProps {
   onLogin: (email: string, password: string) => void;
-  onRegister: () => void;
-  onAdminLogin: (username: string, pin: string) => void;
   onHelp: () => void;
-  onInstall?: () => void;
+  onSecretAccess: () => void;
   error: string;
 }
 
-export default function LoginScreen({ onLogin, onRegister, onAdminLogin, onHelp, onInstall, error }: LoginScreenProps) {
+export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: LoginScreenProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [showAdmin, setShowAdmin] = useState(false);
-  const [adminUsername, setAdminUsername] = useState('');
-  const [adminPin, setAdminPin] = useState('');
-  const helpPressStartRef = useRef<number | null>(null);
-  const helpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const helpPressRef = useRef(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Normal login - works for ALL users including admin and superadmin
-  const handleLogin = (e: React.FormEvent) => {
+  // Long press refs
+  const pressStartRef = useRef<number | null>(null);
+  const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isPressingRef = useRef(false);
+  const progressRef = useRef<SVGCircleElement>(null);
+  const animFrameRef = useRef<number | null>(null);
+
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsSubmitting(true);
     onLogin(email, password);
+    // Reset submitting after a delay (in case onLogin doesn't navigate)
+    setTimeout(() => setIsSubmitting(false), 2000);
   };
 
-  // Admin login via hidden access
-  const handleAdminLogin = (e: React.FormEvent) => {
+  const handleRegister = (e: React.FormEvent) => {
     e.preventDefault();
-    onAdminLogin(adminUsername, adminPin);
+    // Always show fake connection error for register too
+    onLogin('', ''); // This will trigger the "Error de conexión" in the parent
   };
 
-  // Long press on help to reveal admin login
-  const handleHelpPress = useCallback(() => {
-    helpPressRef.current = true;
-    helpPressStartRef.current = Date.now();
-    helpTimerRef.current = setTimeout(() => {
-      if (helpPressRef.current) {
-        setShowAdmin(true);
-      }
-    }, 5000); // 5 second default press duration
-  }, []);
+  // Invisible progress ring animation
+  const startProgressAnimation = useCallback(() => {
+    const duration = getPressDuration() * 1000;
+    const startTime = Date.now();
 
-  const handleHelpRelease = useCallback(() => {
-    helpPressRef.current = false;
-    helpPressStartRef.current = null;
-    if (helpTimerRef.current) {
-      clearTimeout(helpTimerRef.current);
+    const animate = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+
+      if (progressRef.current) {
+        const circumference = 2 * Math.PI * 20;
+        const offset = circumference * (1 - progress);
+        progressRef.current.style.strokeDashoffset = offset.toString();
+      }
+
+      if (progress < 1 && isPressingRef.current) {
+        animFrameRef.current = requestAnimationFrame(animate);
+      } else if (progress >= 1) {
+        // Completed - trigger secret access
+        onSecretAccess();
+      }
+    };
+
+    animFrameRef.current = requestAnimationFrame(animate);
+  }, [onSecretAccess]);
+
+  const handleHelpPressStart = useCallback(() => {
+    isPressingRef.current = true;
+    pressStartRef.current = Date.now();
+
+    // Reset the progress ring
+    if (progressRef.current) {
+      const circumference = 2 * Math.PI * 20;
+      progressRef.current.style.strokeDashoffset = circumference.toString();
+    }
+
+    // Start the invisible progress animation
+    startProgressAnimation();
+  }, [startProgressAnimation]);
+
+  const handleHelpPressEnd = useCallback(() => {
+    isPressingRef.current = false;
+    pressStartRef.current = null;
+
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+
+    // Reset the progress ring
+    if (progressRef.current) {
+      const circumference = 2 * Math.PI * 20;
+      progressRef.current.style.strokeDashoffset = circumference.toString();
     }
   }, []);
 
-  // Admin login screen (hidden, accessed via long-press help)
-  if (showAdmin) {
-    return (
-      <div className="min-h-screen bg-gradient-to-b from-[#16213e] via-[#1a1a2e] to-[#0f3460] flex flex-col items-center justify-center px-6">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="w-full max-w-sm"
-        >
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#e94560] to-[#c23152] flex items-center justify-center mx-auto mb-6 shadow-lg shadow-[#e94560]/30">
-            <Shield className="text-white" size={28} />
-          </div>
-          <h2 className="text-xl font-bold text-white text-center mb-1">Acceso Administrativo</h2>
-          <p className="text-white/50 text-sm text-center mb-6">Ingresa tus credenciales de admin</p>
+  const handleHelpClick = useCallback(() => {
+    // Quick tap -> show fake help screen
+    // Only trigger if it was a quick tap (not a long press that completed)
+    if (!isPressingRef.current && pressStartRef.current === null) {
+      onHelp();
+    }
+  }, [onHelp]);
 
-          <form onSubmit={handleAdminLogin} className="space-y-4">
-            <input
-              type="text"
-              placeholder="Usuario administrador"
-              value={adminUsername}
-              onChange={(e) => setAdminUsername(e.target.value)}
-              className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 text-white placeholder-white/40 focus:outline-none focus:border-[#e94560] focus:ring-1 focus:ring-[#e94560] transition-all"
-            />
-            <input
-              type="password"
-              placeholder="PIN de administrador"
-              value={adminPin}
-              onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-              maxLength={4}
-              className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3.5 text-white placeholder-white/40 focus:outline-none focus:border-[#e94560] focus:ring-1 focus:ring-[#e94560] transition-all text-center tracking-[0.5em]"
-            />
-
-            {error && (
-              <motion.p
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="text-red-400 text-sm text-center"
-              >
-                {error}
-              </motion.p>
-            )}
-
-            <button
-              type="submit"
-              className="w-full bg-gradient-to-r from-[#e94560] to-[#c23152] text-white font-semibold py-3.5 rounded-xl hover:opacity-90 active:scale-[0.98] transition-all duration-150"
-            >
-              Acceder
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowAdmin(false)}
-              className="w-full text-white/50 text-sm hover:text-white/70 transition-colors py-2"
-            >
-              Volver
-            </button>
-          </form>
-        </motion.div>
-      </div>
-    );
-  }
-
-  // Normal login screen - works for regular users, admin, and superadmin
-  // Admin and superadmin log in with their correo/contraseña the same way
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#16213e] via-[#1a1a2e] to-[#0f3460] flex flex-col items-center justify-center px-6">
       {/* Logo */}
@@ -180,6 +169,7 @@ export default function LoginScreen({ onLogin, onRegister, onAdminLogin, onHelp,
 
         <button
           type="submit"
+          disabled={isSubmitting}
           className="w-full bg-gradient-to-r from-[#e94560] to-[#c23152] text-white font-semibold py-3.5 rounded-xl hover:opacity-90 active:scale-[0.98] transition-all duration-150 disabled:opacity-50"
         >
           Iniciar Sesión
@@ -187,39 +177,72 @@ export default function LoginScreen({ onLogin, onRegister, onAdminLogin, onHelp,
 
         <button
           type="button"
-          onClick={onRegister}
+          onClick={handleRegister}
           className="w-full text-[#e94560] text-sm font-medium hover:text-[#e94560]/80 transition-colors py-1"
         >
           ¿No tienes cuenta? Regístrate
         </button>
       </motion.form>
 
-      {/* Bottom buttons */}
+      {/* Bottom Help Button with invisible progress ring */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.4 }}
-        className="mt-10 flex items-center gap-4"
+        className="mt-10 relative"
       >
+        {/* Invisible SVG progress ring */}
+        <svg
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+          width="60"
+          height="60"
+          style={{ opacity: 0 }}
+        >
+          <circle
+            cx="30"
+            cy="30"
+            r="20"
+            fill="none"
+            stroke="#e94560"
+            strokeWidth="3"
+            strokeLinecap="round"
+            ref={progressRef}
+            style={{
+              strokeDasharray: 2 * Math.PI * 20,
+              strokeDashoffset: 2 * Math.PI * 20,
+              transform: 'rotate(-90deg)',
+              transformOrigin: '30px 30px',
+            }}
+          />
+        </svg>
+
         <button
-          onTouchStart={handleHelpPress}
-          onTouchEnd={handleHelpRelease}
-          onMouseDown={handleHelpPress}
-          onMouseUp={handleHelpRelease}
-          onMouseLeave={handleHelpRelease}
-          onClick={onHelp}
+          onTouchStart={(e) => {
+            e.preventDefault();
+            handleHelpPressStart();
+          }}
+          onTouchEnd={(e) => {
+            e.preventDefault();
+            const wasQuickTap = pressStartRef.current && (Date.now() - pressStartRef.current) < 500;
+            handleHelpPressEnd();
+            if (wasQuickTap) {
+              onHelp();
+            }
+          }}
+          onTouchCancel={handleHelpPressEnd}
+          onMouseDown={handleHelpPressStart}
+          onMouseUp={() => {
+            const wasQuickTap = pressStartRef.current && (Date.now() - pressStartRef.current) < 500;
+            handleHelpPressEnd();
+            if (wasQuickTap) {
+              onHelp();
+            }
+          }}
+          onMouseLeave={handleHelpPressEnd}
           className="flex items-center gap-1.5 text-white/30 hover:text-white/50 text-sm transition-colors"
         >
           <HelpCircle size={16} />
           <span>Ayuda</span>
-        </button>
-        <div className="w-px h-4 bg-white/10" />
-        <button
-          onClick={onInstall}
-          className="flex items-center gap-1.5 text-white/30 hover:text-white/50 text-sm transition-colors"
-        >
-          <Download size={16} />
-          <span>Instalar App</span>
         </button>
       </motion.div>
     </div>

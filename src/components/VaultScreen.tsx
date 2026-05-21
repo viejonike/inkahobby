@@ -11,7 +11,6 @@ import {
   FolderOpen,
   Download,
   Trash2,
-  Clock,
   Settings,
   LogOut,
   EyeOff,
@@ -19,14 +18,25 @@ import {
   FileText,
   Shield,
   ChevronRight,
-  Check,
   Upload,
   Smartphone,
   CheckCircle,
+  Check,
+  X,
+  Play,
 } from 'lucide-react';
 import type { LocalUser, VaultFile } from '@/lib/storage';
-import { saveVaultFile, getVaultFiles, deleteVaultFile, addToSyncQueue, getPressDuration, setPressDuration, createBackup } from '@/lib/storage';
+import {
+  saveVaultFile,
+  getVaultFiles,
+  deleteVaultFile,
+  addToSyncQueue,
+  getPressDuration,
+  setPressDuration,
+  createBackup,
+} from '@/lib/storage';
 import { toast } from '@/hooks/use-toast';
+import GalleryViewer from './GalleryViewer';
 
 interface VaultScreenProps {
   user: LocalUser;
@@ -34,22 +44,25 @@ interface VaultScreenProps {
   onAutoLock: () => void;
 }
 
-const MAX_FILES_PER_EXPORT = 50;
+const MAX_FILES_PER_IMPORT = 50;
+type CategoryFilter = 'Todos' | 'Fotos' | 'Videos' | 'Archivos';
 
 export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenProps) {
   const [files, setFiles] = useState<(VaultFile & { userId: string })[]>([]);
-  const [selectedFile, setSelectedFile] = useState<(VaultFile & { userId: string }) | null>(null);
   const [showImportSheet, setShowImportSheet] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showFileViewer, setShowFileViewer] = useState(false);
+  const [showViewer, setShowViewer] = useState(false);
+  const [viewerIndex, setViewerIndex] = useState(0);
   const [importSuccess, setImportSuccess] = useState(false);
   const [importCount, setImportCount] = useState(0);
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
-  const lastActivityRef = useRef<number>(Date.now());
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('Todos');
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [pressDurationVal, setPressDurationVal] = useState(getPressDuration());
-  const [showPinConfirm, setShowPinConfirm] = useState<string | null>(null);
-  const [permissionStatus, setPermissionStatus] = useState<Record<string, 'granted' | 'denied' | 'prompt' | 'unavailable'>>({});
+  const lastActivityRef = useRef<number>(Date.now());
 
   // Auto-lock after 5 minutes of inactivity
   useEffect(() => {
@@ -75,37 +88,19 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
     loadFiles();
   }, [loadFiles]);
 
-  // Check permission status
-  const checkPermission = useCallback(async (type: 'camera' | 'gallery' | 'files'): Promise<boolean> => {
-    try {
-      // For web/ Capacitor, we try to use the Permissions API
-      if (navigator.permissions) {
-        let permissionName: PermissionName;
-        if (type === 'camera') {
-          permissionName = 'camera' as PermissionName;
-        } else {
-          // Gallery and files don't have a direct permission name in web
-          // We just try to access them
-          return true;
-        }
-        const result = await navigator.permissions.query({ name: permissionName });
-        if (result.state === 'granted') {
-          setPermissionStatus(prev => ({ ...prev, [type]: 'granted' }));
-          return true;
-        } else if (result.state === 'denied') {
-          setPermissionStatus(prev => ({ ...prev, [type]: 'denied' }));
-          return false;
-        }
-        // 'prompt' state - will ask for permission
-        setPermissionStatus(prev => ({ ...prev, [type]: 'prompt' }));
+  // Filtered files by category
+  const filteredFiles = files.filter((f) => {
+    switch (categoryFilter) {
+      case 'Fotos':
+        return f.type === 'photo';
+      case 'Videos':
+        return f.type === 'video';
+      case 'Archivos':
+        return f.type === 'file';
+      default:
         return true;
-      }
-      return true;
-    } catch {
-      // Permissions API not available, just try
-      return true;
     }
-  }, []);
+  });
 
   // Generate video thumbnail
   const generateVideoThumbnail = (file: File): Promise<string> => {
@@ -138,7 +133,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
 
   // Process multiple files and save to vault
   const processFiles = useCallback(async (fileList: FileList | File[]) => {
-    const filesToProcess = Array.from(fileList).slice(0, MAX_FILES_PER_EXPORT);
+    const filesToProcess = Array.from(fileList).slice(0, MAX_FILES_PER_IMPORT);
     if (filesToProcess.length === 0) return;
 
     setImporting(true);
@@ -155,17 +150,21 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
         });
 
         const isVideo = file.type.startsWith('video/');
+        const isImage = file.type.startsWith('image/');
         let thumbnail: string | undefined;
+        let fileType: 'photo' | 'video' | 'file' = 'file';
 
         if (isVideo) {
+          fileType = 'video';
           thumbnail = await generateVideoThumbnail(file);
-        } else if (file.type.startsWith('image/')) {
+        } else if (isImage) {
+          fileType = 'photo';
           thumbnail = base64;
         }
 
         const vaultFile: VaultFile & { userId: string } = {
           id: crypto.randomUUID(),
-          type: isVideo ? 'video' : 'photo',
+          type: fileType,
           data: base64,
           thumbnail,
           createdAt: new Date().toISOString(),
@@ -193,135 +192,167 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
     }, 4000);
   }, [user.id, loadFiles]);
 
-  // Import from gallery (photos and videos, multiple selection)
-  const handleImportFromGallery = async () => {
-    const canAccess = await checkPermission('gallery');
-    if (!canAccess) {
-      toast({
-        title: 'Permiso denegado',
-        description: 'Necesitas conceder permiso para acceder a la galería',
-        variant: 'destructive',
-      });
-      return;
-    }
-
+  // File input helper for mobile compatibility
+  const openFileInput = useCallback((options: {
+    accept: string;
+    multiple?: boolean;
+    capture?: string;
+  }) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'image/*,video/*';
-    input.multiple = true;
+    input.accept = options.accept;
+    if (options.multiple) input.multiple = true;
+    if (options.capture) {
+      (input as HTMLInputElement & { capture: string }).capture = options.capture;
+    }
+
+    // Add to DOM before click for mobile compatibility
+    input.style.position = 'fixed';
+    input.style.left = '-9999px';
+    input.style.opacity = '0';
+    document.body.appendChild(input);
+
     input.onchange = async (e) => {
       const fileList = (e.target as HTMLInputElement).files;
-      if (!fileList || fileList.length === 0) return;
+      if (!fileList || fileList.length === 0) {
+        // Cleanup when user cancels
+        document.body.removeChild(input);
+        return;
+      }
 
-      if (fileList.length > MAX_FILES_PER_EXPORT) {
+      if (fileList.length > MAX_FILES_PER_IMPORT) {
         toast({
-          title: `Máximo ${MAX_FILES_PER_EXPORT} archivos`,
-          description: `Seleccionaste ${fileList.length} archivos. Solo se importarán los primeros ${MAX_FILES_PER_EXPORT}.`,
+          title: `Máximo ${MAX_FILES_PER_IMPORT} archivos`,
+          description: `Solo se importarán los primeros ${MAX_FILES_PER_IMPORT}.`,
         });
       }
 
       await processFiles(fileList);
+      document.body.removeChild(input);
     };
+
+    // Cleanup when user cancels file picker
+    const onCancelHandler = () => {
+      setTimeout(() => {
+        if (document.body.contains(input)) {
+          document.body.removeChild(input);
+        }
+      }, 1000);
+    };
+    input.addEventListener('cancel', onCancelHandler);
+
     input.click();
+  }, [processFiles]);
+
+  const handleImportFromGallery = () => {
+    openFileInput({ accept: 'image/*,video/*', multiple: true });
   };
 
-  // Import from camera (single photo)
-  const handleImportFromCamera = async () => {
-    const canAccess = await checkPermission('camera');
-    if (!canAccess) {
-      toast({
-        title: 'Permiso denegado',
-        description: 'Necesitas conceder permiso para acceder a la cámara',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    (input as HTMLInputElement & { capture: string }).capture = 'environment';
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-      await processFiles([file]);
-    };
-    input.click();
+  const handleImportFromCamera = () => {
+    openFileInput({ accept: 'image/*', capture: 'environment' });
   };
 
-  // Import from camera video
-  const handleImportVideoFromCamera = async () => {
-    const canAccess = await checkPermission('camera');
-    if (!canAccess) {
-      toast({
-        title: 'Permiso denegado',
-        description: 'Necesitas conceder permiso para acceder a la cámara',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'video/*';
-    (input as HTMLInputElement & { capture: string }).capture = 'environment';
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-      await processFiles([file]);
-    };
-    input.click();
+  const handleImportVideoFromCamera = () => {
+    openFileInput({ accept: 'video/*', capture: 'environment' });
   };
 
-  // Import from files (any type, multiple selection)
-  const handleImportFromFiles = async () => {
-    const canAccess = await checkPermission('files');
-    if (!canAccess) {
-      toast({
-        title: 'Permiso denegado',
-        description: 'Necesitas conceder permiso para acceder a los archivos',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '*/*';
-    input.multiple = true;
-    input.onchange = async (e) => {
-      const fileList = (e.target as HTMLInputElement).files;
-      if (!fileList || fileList.length === 0) return;
-
-      if (fileList.length > MAX_FILES_PER_EXPORT) {
-        toast({
-          title: `Máximo ${MAX_FILES_PER_EXPORT} archivos`,
-          description: `Seleccionaste ${fileList.length} archivos. Solo se importarán los primeros ${MAX_FILES_PER_EXPORT}.`,
-        });
-      }
-
-      await processFiles(fileList);
-    };
-    input.click();
+  const handleImportFromFiles = () => {
+    openFileInput({ accept: '*/*', multiple: true });
   };
 
-  // Delete file
+  // Delete single file
   const handleDeleteFile = async (fileId: string) => {
     await deleteVaultFile(fileId);
     await loadFiles();
-    setShowPinConfirm(null);
-    setSelectedFile(null);
-    setShowFileViewer(false);
+    setShowDeleteConfirm(false);
+    setSelectedIds(new Set());
+    setSelectionMode(false);
   };
 
-  // Export/download file
-  const handleDownloadFile = (file: VaultFile & { userId: string }) => {
-    const link = document.createElement('a');
-    link.href = file.data;
-    link.download = `${file.type}_${file.id.slice(0, 8)}.${file.type === 'photo' ? 'jpg' : 'mp4'}`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  // Batch delete
+  const handleBatchDelete = async () => {
+    for (const id of selectedIds) {
+      await deleteVaultFile(id);
+    }
+    await loadFiles();
+    setSelectedIds(new Set());
+    setSelectionMode(false);
+    setShowDeleteConfirm(false);
+  };
+
+  // Batch export - export to gallery and auto-delete from app
+  const handleBatchExport = async () => {
+    const filesToExport = files.filter(f => selectedIds.has(f.id));
+    for (const file of filesToExport) {
+      const link = document.createElement('a');
+      link.href = file.data;
+      const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
+      link.download = `${file.type}_${file.id.slice(0, 8)}.${extension}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      // Auto-delete from app after export
+      await deleteVaultFile(file.id);
+    }
+    await loadFiles();
+    setSelectedIds(new Set());
+    setSelectionMode(false);
+    toast({
+      title: 'Exportados',
+      description: `${filesToExport.length} archivo${filesToExport.length !== 1 ? 's' : ''} exportado${filesToExport.length !== 1 ? 's' : ''} y eliminado${filesToExport.length !== 1 ? 's' : ''} de la galería`,
+    });
+  };
+
+  // Export single file from viewer
+  const handleViewerExport = async (file: VaultFile & { userId: string }) => {
+    // Auto-delete after export
+    await deleteVaultFile(file.id);
+    await loadFiles();
+    toast({
+      title: 'Exportado',
+      description: 'Archivo exportado y eliminado de la galería',
+    });
+  };
+
+  // Long press to enter selection mode
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressStartRef = useRef(false);
+
+  const handleItemTouchStart = (fileId: string) => {
+    longPressStartRef.current = true;
+    longPressTimerRef.current = setTimeout(() => {
+      if (longPressStartRef.current) {
+        setSelectionMode(true);
+        setSelectedIds(new Set([fileId]));
+      }
+      longPressStartRef.current = false;
+    }, 500);
+  };
+
+  const handleItemTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+    }
+    longPressStartRef.current = false;
+  };
+
+  const handleItemClick = (fileId: string, index: number) => {
+    recordActivity();
+    if (selectionMode) {
+      const newSelected = new Set(selectedIds);
+      if (newSelected.has(fileId)) {
+        newSelected.delete(fileId);
+        if (newSelected.size === 0) {
+          setSelectionMode(false);
+        }
+      } else {
+        newSelected.add(fileId);
+      }
+      setSelectedIds(newSelected);
+    } else {
+      setViewerIndex(index);
+      setShowViewer(true);
+    }
   };
 
   // Backup
@@ -343,34 +374,91 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
     }
   };
 
+  // Category tabs
+  const categories: CategoryFilter[] = ['Todos', 'Fotos', 'Videos', 'Archivos'];
+  const getCategoryCount = (cat: CategoryFilter): number => {
+    switch (cat) {
+      case 'Fotos': return files.filter(f => f.type === 'photo').length;
+      case 'Videos': return files.filter(f => f.type === 'video').length;
+      case 'Archivos': return files.filter(f => f.type === 'file').length;
+      default: return files.length;
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-[#0f0f1a] z-40 flex flex-col" onClick={recordActivity} onTouchStart={recordActivity}>
       {/* Header */}
       <div className="bg-[#1a1a2e] border-b border-white/10 px-4 py-3 shrink-0 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#e94560] to-[#c23152] flex items-center justify-center shadow-md shadow-[#e94560]/20">
-            <Layers className="text-white" size={18} />
-          </div>
-          <div>
-            <h1 className="text-white font-semibold text-base">Mi Galería Privada</h1>
-            <p className="text-white/30 text-xs">{files.length} elementos</p>
-          </div>
+          {selectionMode ? (
+            <button
+              onClick={() => {
+                setSelectionMode(false);
+                setSelectedIds(new Set());
+              }}
+              className="text-white/50 hover:text-white/70 transition-colors"
+            >
+              <X size={20} />
+            </button>
+          ) : (
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#e94560] to-[#c23152] flex items-center justify-center shadow-md shadow-[#e94560]/20">
+                <Layers className="text-white" size={18} />
+              </div>
+              <div>
+                <h1 className="text-white font-semibold text-base">Mi Galería Privada</h1>
+                <p className="text-white/30 text-xs">{files.length} elementos</p>
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowSettings(true)}
-            className="text-white/30 hover:text-white/60 transition-colors p-2"
-          >
-            <Settings size={20} />
-          </button>
-          <button
-            onClick={onLogout}
-            className="text-white/30 hover:text-white/60 transition-colors p-2"
-          >
-            <LogOut size={20} />
-          </button>
+          {selectionMode ? (
+            <>
+              <button
+                onClick={handleBatchExport}
+                disabled={selectedIds.size === 0}
+                className="text-green-400/70 hover:text-green-400 transition-colors p-2 disabled:opacity-30"
+                title="Exportar seleccionados"
+              >
+                <Download size={20} />
+              </button>
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                disabled={selectedIds.size === 0}
+                className="text-red-400/70 hover:text-red-400 transition-colors p-2 disabled:opacity-30"
+                title="Eliminar seleccionados"
+              >
+                <Trash2 size={20} />
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => setShowSettings(true)}
+                className="text-white/30 hover:text-white/60 transition-colors p-2"
+              >
+                <Settings size={20} />
+              </button>
+              <button
+                onClick={onLogout}
+                className="text-white/30 hover:text-white/60 transition-colors p-2"
+              >
+                <LogOut size={20} />
+              </button>
+            </>
+          )}
         </div>
       </div>
+
+      {/* Selection Mode Bar */}
+      {selectionMode && (
+        <div className="bg-[#1a1a2e]/80 border-b border-white/10 px-4 py-2">
+          <p className="text-white/50 text-xs text-center">
+            {selectedIds.size} seleccionado{selectedIds.size !== 1 ? 's' : ''}
+          </p>
+        </div>
+      )}
 
       {/* Import Success Toast */}
       <AnimatePresence>
@@ -419,9 +507,28 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
         )}
       </AnimatePresence>
 
+      {/* Category Filter Tabs */}
+      <div className="bg-[#1a1a2e]/50 border-b border-white/5 px-4 py-2 shrink-0">
+        <div className="flex gap-1">
+          {categories.map((cat) => (
+            <button
+              key={cat}
+              onClick={() => setCategoryFilter(cat)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                categoryFilter === cat
+                  ? 'bg-[#e94560]/20 text-[#e94560]'
+                  : 'text-white/40 hover:text-white/60'
+              }`}
+            >
+              {cat} ({getCategoryCount(cat)})
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Main Content */}
       <div className="flex-1 overflow-y-auto">
-        {files.length === 0 ? (
+        {filteredFiles.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full px-6">
             <div className="w-20 h-20 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
               <ImageIcon size={32} className="text-white/20" />
@@ -430,22 +537,25 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
               Toca el botón + para importar fotos, videos o archivos
             </p>
             <p className="text-white/20 text-xs text-center">
-              Máximo {MAX_FILES_PER_EXPORT} archivos por exportación
+              Máximo {MAX_FILES_PER_IMPORT} archivos por importación
             </p>
           </div>
         ) : (
           <div className="grid grid-cols-3 gap-1 p-1">
-            {files.map((file, i) => (
+            {filteredFiles.map((file, i) => (
               <motion.button
                 key={file.id}
                 initial={{ scale: 0.8, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
-                transition={{ delay: i * 0.03 }}
-                onClick={() => {
-                  setSelectedFile(file);
-                  setShowFileViewer(true);
-                }}
-                className="aspect-square overflow-hidden relative bg-[#1a1a2e]"
+                transition={{ delay: i * 0.02 }}
+                onTouchStart={() => handleItemTouchStart(file.id)}
+                onTouchEnd={handleItemTouchEnd}
+                onClick={() => handleItemClick(file.id, i)}
+                className={`aspect-square overflow-hidden relative bg-[#1a1a2e] ${
+                  selectionMode && selectedIds.has(file.id)
+                    ? 'ring-2 ring-[#e94560] ring-offset-1 ring-offset-[#0f0f1a]'
+                    : ''
+                }`}
               >
                 {file.thumbnail ? (
                   <img
@@ -457,6 +567,8 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
                   <div className="w-full h-full flex items-center justify-center">
                     {file.type === 'video' ? (
                       <Video size={24} className="text-white/30" />
+                    ) : file.type === 'photo' ? (
+                      <ImageIcon size={24} className="text-white/30" />
                     ) : (
                       <FileText size={24} className="text-white/30" />
                     )}
@@ -464,7 +576,19 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
                 )}
                 {file.type === 'video' && (
                   <div className="absolute top-1 right-1 bg-black/60 rounded-full p-0.5">
-                    <Video size={10} className="text-white" />
+                    <Play size={10} className="text-white" />
+                  </div>
+                )}
+                {file.type === 'file' && (
+                  <div className="absolute top-1 right-1 bg-black/60 rounded-full p-0.5">
+                    <FileText size={10} className="text-white" />
+                  </div>
+                )}
+                {selectionMode && selectedIds.has(file.id) && (
+                  <div className="absolute inset-0 bg-[#e94560]/20 flex items-center justify-center">
+                    <div className="w-6 h-6 rounded-full bg-[#e94560] flex items-center justify-center">
+                      <Check size={14} className="text-white" />
+                    </div>
                   </div>
                 )}
               </motion.button>
@@ -474,25 +598,29 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
       </div>
 
       {/* Floating + Button */}
-      <div className="absolute bottom-6 right-6">
-        <button
-          onClick={() => setShowImportSheet(true)}
-          className="w-14 h-14 bg-gradient-to-br from-[#e94560] to-[#c23152] rounded-full flex items-center justify-center shadow-lg shadow-[#e94560]/30 active:scale-95 transition-transform"
-        >
-          <Plus size={28} className="text-white" />
-        </button>
-      </div>
+      {!selectionMode && (
+        <div className="absolute bottom-6 right-6">
+          <button
+            onClick={() => setShowImportSheet(true)}
+            className="w-14 h-14 bg-gradient-to-br from-[#e94560] to-[#c23152] rounded-full flex items-center justify-center shadow-lg shadow-[#e94560]/30 active:scale-95 transition-transform"
+          >
+            <Plus size={28} className="text-white" />
+          </button>
+        </div>
+      )}
 
       {/* Hide Gallery Button */}
-      <div className="shrink-0 px-4 py-3">
-        <button
-          onClick={onLogout}
-          className="w-full flex items-center justify-center gap-2 text-white/30 hover:text-white/50 transition-colors py-2"
-        >
-          <EyeOff size={16} />
-          <span className="text-sm">Ocultar galería</span>
-        </button>
-      </div>
+      {!selectionMode && (
+        <div className="shrink-0 px-4 py-3">
+          <button
+            onClick={onLogout}
+            className="w-full flex items-center justify-center gap-2 text-white/30 hover:text-white/50 transition-colors py-2"
+          >
+            <EyeOff size={16} />
+            <span className="text-sm">Ocultar galería</span>
+          </button>
+        </div>
+      )}
 
       {/* Import Bottom Sheet */}
       <Dialog open={showImportSheet} onOpenChange={setShowImportSheet}>
@@ -500,12 +628,11 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
           <DialogHeader className="mb-4">
             <DialogTitle className="text-white text-lg flex items-center gap-2">
               <Upload size={20} className="text-[#e94560]" />
-              Exportar a InkaHobby
+              Importar a InkaHobby
             </DialogTitle>
-            <p className="text-white/40 text-xs mt-1">Selecciona de donde quieres importar (máx. {MAX_FILES_PER_EXPORT} archivos)</p>
+            <p className="text-white/40 text-xs mt-1">Selecciona de donde quieres importar (máx. {MAX_FILES_PER_IMPORT} archivos)</p>
           </DialogHeader>
           <div className="space-y-1">
-            {/* Gallery Option */}
             <button
               onClick={handleImportFromGallery}
               className="flex items-center gap-4 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
@@ -520,7 +647,6 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
               <ChevronRight size={16} className="text-white/20" />
             </button>
 
-            {/* Camera Photo Option */}
             <button
               onClick={handleImportFromCamera}
               className="flex items-center gap-4 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
@@ -535,13 +661,12 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
               <ChevronRight size={16} className="text-white/20" />
             </button>
 
-            {/* Camera Video Option */}
             <button
               onClick={handleImportVideoFromCamera}
               className="flex items-center gap-4 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
             >
-              <div className="w-12 h-12 rounded-xl bg-blue-500/20 flex items-center justify-center">
-                <Video size={22} className="text-blue-400" />
+              <div className="w-12 h-12 rounded-xl bg-purple-500/20 flex items-center justify-center">
+                <Video size={22} className="text-purple-400" />
               </div>
               <div className="text-left flex-1">
                 <p className="text-white text-sm font-medium">Grabar Video</p>
@@ -550,13 +675,12 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
               <ChevronRight size={16} className="text-white/20" />
             </button>
 
-            {/* Files Option */}
             <button
               onClick={handleImportFromFiles}
               className="flex items-center gap-4 w-full px-4 py-3.5 rounded-xl hover:bg-white/5 transition-colors bg-white/[0.02]"
             >
-              <div className="w-12 h-12 rounded-xl bg-purple-500/20 flex items-center justify-center">
-                <FolderOpen size={22} className="text-purple-400" />
+              <div className="w-12 h-12 rounded-xl bg-yellow-500/20 flex items-center justify-center">
+                <FolderOpen size={22} className="text-yellow-400" />
               </div>
               <div className="text-left flex-1">
                 <p className="text-white text-sm font-medium">Desde Archivos</p>
@@ -566,76 +690,41 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
             </button>
           </div>
 
-          {/* Max files notice */}
           <div className="mt-4 flex items-center gap-2 justify-center">
             <Smartphone size={14} className="text-white/20" />
-            <p className="text-white/20 text-xs">Máximo {MAX_FILES_PER_EXPORT} archivos por exportación</p>
+            <p className="text-white/20 text-xs">Máximo {MAX_FILES_PER_IMPORT} archivos por importación</p>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* File Viewer Dialog */}
-      <Dialog open={showFileViewer} onOpenChange={setShowFileViewer}>
-        <DialogContent className="bg-[#0f0f1a] border-white/10 max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="text-white flex items-center justify-between">
-              <span>{selectedFile?.type === 'photo' ? 'Foto' : 'Video'}</span>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => selectedFile && handleDownloadFile(selectedFile)}
-                  className="text-white/40 hover:text-white/70 transition-colors p-1"
-                >
-                  <Download size={18} />
-                </button>
-                <button
-                  onClick={() => selectedFile && setShowPinConfirm(selectedFile.id)}
-                  className="text-red-400/60 hover:text-red-400 transition-colors p-1"
-                >
-                  <Trash2 size={18} />
-                </button>
-              </div>
-            </DialogTitle>
-          </DialogHeader>
-          <div className="relative">
-            {selectedFile?.type === 'photo' ? (
-              <img
-                src={selectedFile.data}
-                alt=""
-                className="w-full rounded-lg max-h-[70vh] object-contain"
-              />
-            ) : (
-              <video
-                src={selectedFile?.data}
-                controls
-                className="w-full rounded-lg max-h-[70vh]"
-              />
-            )}
-            <p className="text-white/30 text-xs mt-2 text-center">
-              <Clock size={10} className="inline mr-1" />
-              {selectedFile?.createdAt
-                ? new Date(selectedFile.createdAt).toLocaleString('es')
-                : ''}
-            </p>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* Gallery Viewer */}
+      {showViewer && filteredFiles.length > 0 && (
+        <GalleryViewer
+          files={filteredFiles}
+          initialIndex={viewerIndex}
+          onClose={() => setShowViewer(false)}
+          onExport={handleViewerExport}
+          onDelete={handleDeleteFile}
+          canDelete={true}
+        />
+      )}
 
-      {/* Delete Confirmation */}
-      <Dialog open={!!showPinConfirm} onOpenChange={() => setShowPinConfirm(null)}>
+      {/* Delete Confirmation (batch) */}
+      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
         <DialogContent className="bg-[#1a1a2e] border-white/10">
           <DialogHeader>
-            <DialogTitle className="text-white">¿Eliminar archivo?</DialogTitle>
+            <DialogTitle className="text-white">¿Eliminar {selectedIds.size} archivo{selectedIds.size !== 1 ? 's' : ''}?</DialogTitle>
           </DialogHeader>
           <p className="text-white/50 text-sm">Esta acción no se puede deshacer.</p>
           <div className="flex gap-3 mt-4">
             <button
-              onClick={() => setShowPinConfirm(null)}
+              onClick={() => setShowDeleteConfirm(false)}
               className="flex-1 py-2.5 rounded-xl border border-white/20 text-white/60 hover:text-white hover:border-white/30 transition-colors text-sm"
             >
               Cancelar
             </button>
             <button
-              onClick={() => showPinConfirm && handleDeleteFile(showPinConfirm)}
+              onClick={handleBatchDelete}
               className="flex-1 py-2.5 rounded-xl bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors text-sm font-medium"
             >
               Eliminar
@@ -659,22 +748,25 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
             <div>
               <p className="text-white/70 text-sm mb-1">Tiempo de presión para ayuda</p>
               <p className="text-white/30 text-xs mb-3">
-                Elige cuántos segundos debes mantener presionado el botón de ayuda para abrir la galería
+                Elige cuántos segundos debes mantener presionado el botón de ayuda para acceder
               </p>
-              <div className="flex items-center gap-4">
-                <input
-                  type="range"
-                  min={3}
-                  max={15}
-                  value={pressDurationVal}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value);
-                    setPressDurationVal(val);
-                    setPressDuration(val);
-                  }}
-                  className="flex-1 accent-[#e94560]"
-                />
-                <span className="text-white text-sm font-medium w-12 text-center">{pressDurationVal}s</span>
+              <div className="flex items-center gap-3">
+                {[5, 8, 10].map((seconds) => (
+                  <button
+                    key={seconds}
+                    onClick={() => {
+                      setPressDurationVal(seconds);
+                      setPressDuration(seconds);
+                    }}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                      pressDurationVal === seconds
+                        ? 'bg-[#e94560]/20 text-[#e94560] border border-[#e94560]/50'
+                        : 'bg-white/5 text-white/50 border border-white/10 hover:border-white/20'
+                    }`}
+                  >
+                    {seconds}s
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -682,7 +774,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock }: VaultScreenP
             <div>
               <p className="text-white/70 text-sm mb-1">Respaldo</p>
               <p className="text-white/30 text-xs mb-3">
-                Guarda un archivo de respaldo en tu dispositivo. Si alguna vez pierdes acceso a tu cuenta, podrás recuperar la cuenta con este archivo.
+                Guarda un archivo de respaldo en tu dispositivo para recuperar tu cuenta si pierdes acceso.
               </p>
               <div className="space-y-2">
                 <button

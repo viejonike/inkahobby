@@ -47,7 +47,7 @@ export default function UserRegistration({ onRegister, onBack, error }: UserRegi
             <Layers className="text-white" size={28} />
           </div>
           <h1 className="text-2xl font-bold text-white mb-1">Crear Cuenta</h1>
-          <p className="text-white/50 text-sm">Únete a InkaHobby</p>
+          <p className="text-white/50 text-sm">Configura tu espacio privado</p>
         </motion.div>
       </div>
 
@@ -60,7 +60,7 @@ export default function UserRegistration({ onRegister, onBack, error }: UserRegi
           className="bg-[#1a1a2e] border border-white/10 rounded-2xl p-6"
         >
           <h2 className="text-white font-semibold text-lg mb-1">Crear usuario y PIN</h2>
-          <p className="text-white/50 text-sm mb-6">Elige un nombre de usuario y PIN para tu espacio privado</p>
+          <p className="text-white/50 text-sm mb-6">Elige un nombre de usuario y un PIN de 4 dígitos para tu espacio privado</p>
 
           <form onSubmit={handleSubmit} className="space-y-5">
             {/* Username */}
@@ -92,6 +92,7 @@ export default function UserRegistration({ onRegister, onBack, error }: UserRegi
               <label className="text-sm text-white/70 font-medium">Ingresa 4 dígitos</label>
               <input
                 type="password"
+                inputMode="numeric"
                 placeholder="••••"
                 value={pin}
                 onChange={(e) => {
@@ -105,7 +106,7 @@ export default function UserRegistration({ onRegister, onBack, error }: UserRegi
                 {[0, 1, 2, 3].map((i) => (
                   <div
                     key={i}
-                    className={`w-3 h-3 rounded-full transition-all ${
+                    className={`w-3 h-3 rounded-full transition-all duration-200 ${
                       i < pin.length ? 'bg-[#e94560] scale-110' : 'bg-white/20'
                     }`}
                   />
@@ -118,6 +119,7 @@ export default function UserRegistration({ onRegister, onBack, error }: UserRegi
               <label className="text-sm text-white/70 font-medium">Confirmar PIN</label>
               <input
                 type="password"
+                inputMode="numeric"
                 placeholder="Repite tu PIN"
                 value={confirmPin}
                 onChange={(e) => {

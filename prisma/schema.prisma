@@ -21,7 +21,7 @@ model User {
 model VaultFile {
   id        String   @id @default(cuid())
   userId    String
-  type      String   // "photo" or "video"
+  type      String   // "photo", "video", or "file"
   data      String   // base64 encoded
   thumbnail String?  // base64 thumbnail
   createdAt DateTime @default(now())

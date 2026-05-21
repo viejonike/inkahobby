@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import LoginScreen from '@/components/LoginScreen';
 import UserRegistration from '@/components/UserRegistration';
+import PinEntry from '@/components/PinEntry';
 import VaultScreen from '@/components/VaultScreen';
 import AdminPanel from '@/components/AdminPanel';
 import SuperAdminPanel from '@/components/SuperAdminPanel';
@@ -23,12 +24,13 @@ import {
 import { syncUser } from '@/lib/api';
 import type { LocalUser } from '@/lib/storage';
 
-type Screen = 'loading' | 'login' | 'register' | 'vault' | 'admin' | 'superadmin' | 'help';
+type Screen = 'loading' | 'login' | 'help' | 'registration' | 'pin' | 'vault' | 'admin' | 'superadmin';
 
 export default function HomePage() {
   const [screen, setScreen] = useState<Screen>('loading');
   const [currentUser, setCurrentUserState] = useState<LocalUser | null>(null);
   const [error, setError] = useState('');
+  const [localUserForPin, setLocalUserForPin] = useState<LocalUser | null>(null);
   const { processQueue } = useSync();
   useServiceWorker();
 
@@ -42,10 +44,17 @@ export default function HomePage() {
           try {
             const res = await fetch('/api/users');
             if (res.ok) {
-              const serverUsers = await res.json() as Array<{ id: string; username: string; pin: string; role: string; blocked?: boolean; email?: string; createdAt: string }>;
+              const serverUsers = await res.json() as Array<{
+                id: string;
+                username: string;
+                pin: string;
+                role: string;
+                blocked?: boolean;
+                email?: string;
+                createdAt: string;
+              }>;
               const serverUser = serverUsers.find((u) => u.id === user.id || u.username === user.username);
               if (serverUser) {
-                // Update local user data from server
                 const updatedUser: LocalUser = {
                   id: serverUser.id,
                   username: serverUser.username,
@@ -59,7 +68,6 @@ export default function HomePage() {
 
                 if (updatedUser.blocked) {
                   await logoutUser();
-                  setError('Cuenta bloqueada');
                   setScreen('login');
                   return;
                 }
@@ -80,10 +88,10 @@ export default function HomePage() {
           }
 
           if (user.blocked) {
-            setError('Cuenta bloqueada');
             setScreen('login');
             return;
           }
+
           setCurrentUserState(user);
           if (user.role === 'superadmin') {
             setScreen('superadmin');
@@ -115,91 +123,77 @@ export default function HomePage() {
     return () => clearTimeout(timer);
   }, [processQueue]);
 
-  // Login with email (username) + password (PIN)
-  // Admin and superadmin use the SAME login form
+  // Auto-lock: detect when app goes to background and comes back
+  const wasHiddenRef = useRef(false);
+  const hiddenScreenRef = useRef<Screen>('login');
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        // Record that the page was hidden and which screen we were on
+        wasHiddenRef.current = true;
+        hiddenScreenRef.current = screen;
+      } else if (document.visibilityState === 'visible' && wasHiddenRef.current) {
+        // Page became visible again - auto-lock if we were on a sensitive screen
+        wasHiddenRef.current = false;
+        const prevScreen = hiddenScreenRef.current;
+        if (['vault', 'admin', 'superadmin', 'pin', 'registration'].includes(prevScreen)) {
+          logoutUser().then(() => {
+            setCurrentUserState(null);
+            setLocalUserForPin(null);
+            setScreen('login');
+            setError('');
+          });
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [screen]);
+
+  // Login with email + password (for admin accounts ONLY)
+  // Non-admin users ALWAYS get "Error de conexión"
   const handleLogin = async (email: string, password: string) => {
     setError('');
+
+    // If email/password are empty (from register button), show fake error
+    if (!email || !password) {
+      setError('Error de conexión. No se pudo conectar al servidor. Intenta más tarde.');
+      return;
+    }
+
     try {
       const hashedPassword = await hashPin(password);
 
-      // First check IndexedDB
-      const localUser = await getUserByUsername(email);
-      if (localUser) {
-        if (localUser.blocked) {
-          setError('Cuenta bloqueada. Tu cuenta ha sido suspendida. Contacta al soporte.');
-          return;
-        }
-        if (localUser.pin === hashedPassword) {
-          await setCurrentUser(localUser.id);
-          setCurrentUserState(localUser);
-
-          // Try to sync with server to get latest role/blocked status
-          try {
-            const res = await fetch('/api/users');
-            if (res.ok) {
-              const serverUsers = await res.json() as Array<{ id: string; username: string; pin: string; role: string; blocked?: boolean; email?: string; createdAt: string }>;
-              const serverUser = serverUsers.find((u) => u.username === email);
-              if (serverUser) {
-                const updatedUser: LocalUser = {
-                  id: serverUser.id,
-                  username: serverUser.username,
-                  email: serverUser.email,
-                  pin: serverUser.pin,
-                  role: serverUser.role,
-                  blocked: serverUser.blocked,
-                  createdAt: serverUser.createdAt,
-                };
-                await saveUser(updatedUser);
-                setCurrentUserState(updatedUser);
-
-                if (updatedUser.blocked) {
-                  await logoutUser();
-                  setError('Cuenta bloqueada.');
-                  setScreen('login');
-                  return;
-                }
-
-                if (updatedUser.role === 'superadmin') {
-                  setScreen('superadmin');
-                } else if (updatedUser.role === 'admin') {
-                  setScreen('admin');
-                } else {
-                  setScreen('vault');
-                }
-                return;
-              }
-            }
-          } catch {
-            // Server unavailable, use local data
-          }
-
-          if (localUser.role === 'superadmin') {
-            setScreen('superadmin');
-          } else if (localUser.role === 'admin') {
-            setScreen('admin');
-          } else {
-            setScreen('vault');
-          }
-          return;
-        } else {
-          setError('Contraseña incorrecta');
-          return;
-        }
-      }
-
-      // If not found locally, check server
+      // Check server for admin accounts (email-based login)
       try {
         const res = await fetch('/api/users');
         if (res.ok) {
-          const users = await res.json() as Array<{ id: string; username: string; pin: string; role: string; blocked?: boolean; email?: string; createdAt: string }>;
+          const users = await res.json() as Array<{
+            id: string;
+            username: string;
+            email?: string;
+            pin: string;
+            role: string;
+            blocked?: boolean;
+            createdAt: string;
+          }>;
+
+          // Find user by email or username match with admin credentials
           const serverUser = users.find(
-            (u) => (u.username === email || u.email === email) && u.pin === hashedPassword
+            (u) =>
+              (u.email === email || u.username === email) &&
+              u.pin === hashedPassword &&
+              (u.role === 'admin' || u.role === 'superadmin')
           );
+
           if (serverUser) {
             if (serverUser.blocked) {
-              setError('Cuenta bloqueada. Tu cuenta ha sido suspendida. Contacta al soporte.');
+              setError('Cuenta bloqueada. Tu cuenta ha sido suspendida.');
               return;
             }
+
             const localUserData: LocalUser = {
               id: serverUser.id,
               username: serverUser.username,
@@ -212,82 +206,12 @@ export default function HomePage() {
             await saveUser(localUserData);
             await setCurrentUser(localUserData.id);
             setCurrentUserState(localUserData);
-            if (localUserData.role === 'superadmin') {
-              setScreen('superadmin');
-            } else if (localUserData.role === 'admin') {
-              setScreen('admin');
-            } else {
-              setScreen('vault');
-            }
-            return;
-          }
-        }
-      } catch {
-        // Server not available, continue with local check
-      }
 
-      setError('Usuario no encontrado');
-    } catch {
-      setError('Error al iniciar sesión');
-    }
-  };
-
-  // Admin login via long-press help button (alternative access)
-  const handleAdminLogin = async (username: string, pin: string) => {
-    setError('');
-    try {
-      const hashedPin = await hashPin(pin);
-
-      // Check locally first
-      const localUser = await getUserByUsername(username);
-      if (localUser) {
-        if (localUser.pin === hashedPin && (localUser.role === 'admin' || localUser.role === 'superadmin')) {
-          await setCurrentUser(localUser.id);
-          setCurrentUserState(localUser);
-          if (localUser.role === 'superadmin') {
-            setScreen('superadmin');
-          } else {
-            setScreen('admin');
-          }
-          return;
-        } else if (localUser.pin !== hashedPin) {
-          setError('PIN incorrecto');
-          return;
-        } else {
-          setError('No tienes permisos de administrador');
-          return;
-        }
-      }
-
-      // Check server
-      try {
-        const res = await fetch('/api/users');
-        if (res.ok) {
-          const users = await res.json() as Array<{ id: string; username: string; pin: string; role: string; blocked?: boolean; email?: string; createdAt: string }>;
-          const serverUser = users.find(
-            (u) => u.username === username && u.pin === hashedPin
-          );
-          if (serverUser && (serverUser.role === 'admin' || serverUser.role === 'superadmin')) {
-            const localUserData: LocalUser = {
-              id: serverUser.id,
-              username: serverUser.username,
-              email: serverUser.email,
-              pin: serverUser.pin,
-              role: serverUser.role,
-              blocked: serverUser.blocked,
-              createdAt: serverUser.createdAt,
-            };
-            await saveUser(localUserData);
-            await setCurrentUser(localUserData.id);
-            setCurrentUserState(localUserData);
             if (localUserData.role === 'superadmin') {
               setScreen('superadmin');
             } else {
               setScreen('admin');
             }
-            return;
-          } else if (serverUser) {
-            setError('No tienes permisos de administrador');
             return;
           }
         }
@@ -295,12 +219,100 @@ export default function HomePage() {
         // Server not available
       }
 
-      setError('Credenciales de administrador inválidas');
+      // Always show fake connection error for non-admin users
+      setError('Error de conexión. No se pudo conectar al servidor. Intenta más tarde.');
     } catch {
-      setError('Error de acceso');
+      setError('Error de conexión. No se pudo conectar al servidor. Intenta más tarde.');
     }
   };
 
+  // Handle long-press on Help button → Secret access
+  const handleSecretAccess = async () => {
+    setError('');
+
+    // Check if user already exists locally
+    const users = await getUsers();
+    const regularUsers = users.filter(u => u.role === 'user');
+
+    if (regularUsers.length > 0) {
+      // User exists → go to PIN entry
+      setLocalUserForPin(regularUsers[0]);
+      setScreen('pin');
+    } else {
+      // First time → go to registration
+      setScreen('registration');
+    }
+  };
+
+  // Handle PIN correct
+  const handlePinCorrect = async () => {
+    if (!localUserForPin) return;
+
+    // Check if blocked on server
+    try {
+      const res = await fetch('/api/users');
+      if (res.ok) {
+        const serverUsers = await res.json() as Array<{
+          id: string;
+          username: string;
+          pin: string;
+          role: string;
+          blocked?: boolean;
+          email?: string;
+          createdAt: string;
+        }>;
+        const serverUser = serverUsers.find(u => u.id === localUserForPin.id || u.username === localUserForPin.username);
+        if (serverUser) {
+          const updatedUser: LocalUser = {
+            id: serverUser.id,
+            username: serverUser.username,
+            email: serverUser.email,
+            pin: serverUser.pin,
+            role: serverUser.role,
+            blocked: serverUser.blocked,
+            createdAt: serverUser.createdAt,
+          };
+          await saveUser(updatedUser);
+
+          if (updatedUser.blocked) {
+            setError('Cuenta bloqueada.');
+            setScreen('login');
+            setLocalUserForPin(null);
+            return;
+          }
+
+          await setCurrentUser(updatedUser.id);
+          setCurrentUserState(updatedUser);
+          setLocalUserForPin(null);
+
+          if (updatedUser.role === 'superadmin') {
+            setScreen('superadmin');
+          } else if (updatedUser.role === 'admin') {
+            setScreen('admin');
+          } else {
+            setScreen('vault');
+          }
+          return;
+        }
+      }
+    } catch {
+      // Server not available
+    }
+
+    if (localUserForPin.blocked) {
+      setError('Cuenta bloqueada.');
+      setScreen('login');
+      setLocalUserForPin(null);
+      return;
+    }
+
+    await setCurrentUser(localUserForPin.id);
+    setCurrentUserState(localUserForPin);
+    setLocalUserForPin(null);
+    setScreen('vault');
+  };
+
+  // Handle registration
   const handleRegister = async (username: string, pin: string) => {
     setError('');
     try {
@@ -313,7 +325,6 @@ export default function HomePage() {
 
       const hashedPin = await hashPin(pin);
 
-      // Create user locally
       const newUser: LocalUser = {
         id: crypto.randomUUID(),
         username,
@@ -341,6 +352,7 @@ export default function HomePage() {
   const handleLogout = async () => {
     await logoutUser();
     setCurrentUserState(null);
+    setLocalUserForPin(null);
     setScreen('login');
     setError('');
   };
@@ -348,9 +360,13 @@ export default function HomePage() {
   const handleAutoLock = async () => {
     await logoutUser();
     setCurrentUserState(null);
+    setLocalUserForPin(null);
     setScreen('login');
     setError('');
   };
+
+  // Sensitive screens that need auto-lock protection
+  const isSensitiveScreen = ['vault', 'admin', 'superadmin', 'pin', 'registration'].includes(screen);
 
   return (
     <div className="min-h-screen bg-[#0f0f1a]">
@@ -381,25 +397,50 @@ export default function HomePage() {
           <motion.div key="login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <LoginScreen
               onLogin={handleLogin}
-              onRegister={() => {
+              onHelp={() => {
                 setError('');
-                setScreen('register');
+                setScreen('help');
               }}
-              onAdminLogin={handleAdminLogin}
-              onHelp={() => setScreen('help')}
+              onSecretAccess={handleSecretAccess}
               error={error}
             />
           </motion.div>
         )}
 
-        {screen === 'register' && (
-          <motion.div key="register" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+        {screen === 'help' && (
+          <motion.div key="help" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <HelpScreen
+              onBack={() => {
+                setError('');
+                setScreen('login');
+              }}
+            />
+          </motion.div>
+        )}
+
+        {screen === 'registration' && (
+          <motion.div key="registration" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <UserRegistration
               onRegister={handleRegister}
               onBack={() => {
                 setError('');
                 setScreen('login');
               }}
+              error={error}
+            />
+          </motion.div>
+        )}
+
+        {screen === 'pin' && localUserForPin && (
+          <motion.div key="pin" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <PinEntry
+              onPinCorrect={handlePinCorrect}
+              onBack={() => {
+                setError('');
+                setLocalUserForPin(null);
+                setScreen('login');
+              }}
+              correctPinHash={localUserForPin.pin}
               error={error}
             />
           </motion.div>
@@ -420,7 +461,7 @@ export default function HomePage() {
             <AdminPanel
               user={currentUser}
               onLogout={handleLogout}
-              isSuperAdmin={false}
+              onAutoLock={handleAutoLock}
             />
           </motion.div>
         )}
@@ -430,17 +471,7 @@ export default function HomePage() {
             <SuperAdminPanel
               user={currentUser}
               onLogout={handleLogout}
-            />
-          </motion.div>
-        )}
-
-        {screen === 'help' && (
-          <motion.div key="help" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <HelpScreen
-              onBack={() => {
-                setError('');
-                setScreen('login');
-              }}
+              onAutoLock={handleAutoLock}
             />
           </motion.div>
         )}
