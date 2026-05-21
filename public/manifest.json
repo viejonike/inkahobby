@@ -1,27 +1,42 @@
 {
   "name": "InkaHobby",
   "short_name": "InkaHobby",
-  "description": "Tu red social de pasatiempos - Comparte y descubre hobbies",
+  "description": "Tu red social creativa - Comparte tus hobbies con el mundo",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#111827",
-  "theme_color": "#F59E0B",
+  "background_color": "#1a1a2e",
+  "theme_color": "#e94560",
   "orientation": "portrait",
+  "scope": "/",
+  "lang": "es",
+  "categories": ["social", "lifestyle"],
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
       "src": "/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ],
-  "categories": ["social", "lifestyle"],
-  "lang": "es",
-  "dir": "ltr"
+  "screenshots": [],
+  "shortcuts": []
 }

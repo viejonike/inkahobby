@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const viewport: Viewport = {
-  themeColor: "#F59E0B",
+  themeColor: "#e94560",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
@@ -22,9 +22,9 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "InkaHobby - Tu Red Social de Pasatiempos",
-  description: "Comparte y descubre hobbies con la comunidad InkaHobby. Fotografía, pintura, lectura y más.",
-  keywords: ["InkaHobby", "hobbies", "social", "pasatiempos", "fotografía", "pintura", "lectura"],
+  title: "InkaHobby - Tu red social creativa",
+  description: "Tu red social creativa. Comparte y descubre hobbies con la comunidad InkaHobby.",
+  keywords: ["InkaHobby", "hobbies", "social", "creativa"],
   authors: [{ name: "InkaHobby" }],
   manifest: "/manifest.json",
   icons: {
@@ -33,7 +33,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "InkaHobby",
-    description: "Tu red social de pasatiempos",
+    description: "Tu red social creativa",
     type: "website",
   },
 };
@@ -52,7 +52,7 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-title" content="InkaHobby" />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-gray-900 text-white`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[#0f0f1a] text-white`}
       >
         {children}
         <Toaster />

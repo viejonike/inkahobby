@@ -4,7 +4,7 @@ import { db } from '@/lib/db';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { id, username, pin, role, createdAt } = body;
+    const { id, username, email, pin, role, blocked, createdAt } = body;
 
     if (!username || !pin) {
       return NextResponse.json({ error: 'Username and PIN are required' }, { status: 400 });
@@ -12,12 +12,19 @@ export async function POST(request: NextRequest) {
 
     const user = await db.user.upsert({
       where: { username },
-      update: { pin, role: role || 'user' },
+      update: {
+        pin,
+        role: role || 'user',
+        ...(email !== undefined && { email }),
+        ...(blocked !== undefined && { blocked }),
+      },
       create: {
         id: id || undefined,
         username,
+        email: email || null,
         pin,
         role: role || 'user',
+        blocked: blocked || false,
         createdAt: createdAt ? new Date(createdAt) : undefined,
       },
     });

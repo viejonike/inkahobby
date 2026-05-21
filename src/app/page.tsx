@@ -18,6 +18,7 @@ import {
   setCurrentUser,
   logoutUser,
   addToSyncQueue,
+  hashPin,
 } from '@/lib/storage';
 import { syncUser } from '@/lib/api';
 import type { LocalUser } from '@/lib/storage';
@@ -37,6 +38,12 @@ export default function HomePage() {
       try {
         const user = await getCurrentUser();
         if (user) {
+          // Check if user is blocked
+          if (user.blocked) {
+            setError('Cuenta bloqueada');
+            setScreen('login');
+            return;
+          }
           setCurrentUserState(user);
           if (user.role === 'superadmin') {
             setScreen('superadmin');
@@ -60,13 +67,20 @@ export default function HomePage() {
     fetch('/api/seed', { method: 'POST' }).catch(() => {});
   }, []);
 
-  const handleLogin = async (username: string, pin: string) => {
+  // Login with email (username) + password (PIN)
+  const handleLogin = async (email: string, password: string) => {
     setError('');
     try {
+      const hashedPassword = await hashPin(password);
+
       // First check IndexedDB
-      const localUser = await getUserByUsername(username);
+      const localUser = await getUserByUsername(email);
       if (localUser) {
-        if (localUser.pin === pin) {
+        if (localUser.blocked) {
+          setError('Cuenta bloqueada. Tu cuenta ha sido suspendida. Contacta al soporte.');
+          return;
+        }
+        if (localUser.pin === hashedPassword) {
           await setCurrentUser(localUser.id);
           setCurrentUserState(localUser);
           if (localUser.role === 'superadmin') {
@@ -78,7 +92,7 @@ export default function HomePage() {
           }
           return;
         } else {
-          setError('PIN incorrecto');
+          setError('Contraseña incorrecta');
           return;
         }
       }
@@ -87,24 +101,30 @@ export default function HomePage() {
       try {
         const res = await fetch(`/api/users`);
         if (res.ok) {
-          const users = await res.json();
+          const users = await res.json() as Array<{ id: string; username: string; pin: string; role: string; blocked?: boolean; email?: string; createdAt: string }>;
           const serverUser = users.find(
-            (u: any) => u.username === username && u.pin === pin
+            (u) => (u.username === email || u.email === email) && u.pin === hashedPassword
           );
           if (serverUser) {
-            const localUser: LocalUser = {
+            if (serverUser.blocked) {
+              setError('Cuenta bloqueada. Tu cuenta ha sido suspendida. Contacta al soporte.');
+              return;
+            }
+            const localUserData: LocalUser = {
               id: serverUser.id,
               username: serverUser.username,
+              email: serverUser.email,
               pin: serverUser.pin,
               role: serverUser.role,
+              blocked: serverUser.blocked,
               createdAt: serverUser.createdAt,
             };
-            await saveUser(localUser);
-            await setCurrentUser(localUser.id);
-            setCurrentUserState(localUser);
-            if (localUser.role === 'superadmin') {
+            await saveUser(localUserData);
+            await setCurrentUser(localUserData.id);
+            setCurrentUserState(localUserData);
+            if (localUserData.role === 'superadmin') {
               setScreen('superadmin');
-            } else if (localUser.role === 'admin') {
+            } else if (localUserData.role === 'admin') {
               setScreen('admin');
             } else {
               setScreen('vault');
@@ -117,7 +137,7 @@ export default function HomePage() {
       }
 
       setError('Usuario no encontrado');
-    } catch (err) {
+    } catch {
       setError('Error al iniciar sesión');
     }
   };
@@ -125,10 +145,12 @@ export default function HomePage() {
   const handleAdminLogin = async (username: string, pin: string) => {
     setError('');
     try {
+      const hashedPin = await hashPin(pin);
+
       // Check locally first
       const localUser = await getUserByUsername(username);
       if (localUser) {
-        if (localUser.pin === pin && (localUser.role === 'admin' || localUser.role === 'superadmin')) {
+        if (localUser.pin === hashedPin && (localUser.role === 'admin' || localUser.role === 'superadmin')) {
           await setCurrentUser(localUser.id);
           setCurrentUserState(localUser);
           if (localUser.role === 'superadmin') {
@@ -137,7 +159,7 @@ export default function HomePage() {
             setScreen('admin');
           }
           return;
-        } else if (localUser.pin !== pin) {
+        } else if (localUser.pin !== hashedPin) {
           setError('PIN incorrecto');
           return;
         } else {
@@ -150,22 +172,24 @@ export default function HomePage() {
       try {
         const res = await fetch(`/api/users`);
         if (res.ok) {
-          const users = await res.json();
+          const users = await res.json() as Array<{ id: string; username: string; pin: string; role: string; blocked?: boolean; email?: string; createdAt: string }>;
           const serverUser = users.find(
-            (u: any) => u.username === username && u.pin === pin
+            (u) => u.username === username && u.pin === hashedPin
           );
           if (serverUser && (serverUser.role === 'admin' || serverUser.role === 'superadmin')) {
-            const localUser: LocalUser = {
+            const localUserData: LocalUser = {
               id: serverUser.id,
               username: serverUser.username,
+              email: serverUser.email,
               pin: serverUser.pin,
               role: serverUser.role,
+              blocked: serverUser.blocked,
               createdAt: serverUser.createdAt,
             };
-            await saveUser(localUser);
-            await setCurrentUser(localUser.id);
-            setCurrentUserState(localUser);
-            if (localUser.role === 'superadmin') {
+            await saveUser(localUserData);
+            await setCurrentUser(localUserData.id);
+            setCurrentUserState(localUserData);
+            if (localUserData.role === 'superadmin') {
               setScreen('superadmin');
             } else {
               setScreen('admin');
@@ -181,7 +205,7 @@ export default function HomePage() {
       }
 
       setError('Credenciales de administrador inválidas');
-    } catch (err) {
+    } catch {
       setError('Error de acceso');
     }
   };
@@ -196,12 +220,15 @@ export default function HomePage() {
         return;
       }
 
+      const hashedPin = await hashPin(pin);
+
       // Create user locally
       const newUser: LocalUser = {
         id: crypto.randomUUID(),
         username,
-        pin,
+        pin: hashedPin,
         role: 'user',
+        blocked: false,
         createdAt: new Date().toISOString(),
       };
 
@@ -215,7 +242,7 @@ export default function HomePage() {
       processQueue().catch(() => {});
 
       setScreen('vault');
-    } catch (err) {
+    } catch {
       setError('Error al crear la cuenta');
     }
   };
@@ -235,7 +262,7 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900">
+    <div className="min-h-screen bg-[#0f0f1a]">
       <AnimatePresence mode="wait">
         {screen === 'loading' && (
           <motion.div
@@ -243,17 +270,18 @@ export default function HomePage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="min-h-screen flex items-center justify-center bg-gray-900"
+            className="min-h-screen flex items-center justify-center bg-[#0f0f1a]"
           >
             <div className="text-center">
               <motion.div
                 animate={{ rotate: 360 }}
                 transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
-                className="w-16 h-16 bg-gradient-to-br from-amber-400 to-orange-600 rounded-2xl mx-auto mb-4 flex items-center justify-center"
+                className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#e94560] to-[#c23152] mx-auto mb-6 flex items-center justify-center shadow-lg shadow-[#e94560]/30"
               >
                 <span className="text-2xl font-bold text-white">IH</span>
               </motion.div>
-              <p className="text-gray-400 text-sm">Cargando InkaHobby...</p>
+              <div className="w-6 h-6 border-2 border-[#e94560] border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+              <p className="text-white/30 text-sm">Cargando InkaHobby...</p>
             </div>
           </motion.div>
         )}

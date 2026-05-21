@@ -13,10 +13,145 @@ export interface VaultFile {
 export interface LocalUser {
   id: string;
   username: string;
-  pin: string;
+  email?: string;
+  pin: string; // hashed PIN
   role: string;
+  blocked?: boolean;
   createdAt: string;
 }
+
+// ─── PIN Hashing ────────────────────────────────────────
+
+export async function hashPin(pin: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(pin + '_inkahobby_salt_2024');
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ─── Device ID ────────────────────────────────────────
+
+const DEVICE_ID_KEY = 'inkahobby_device_id';
+
+export function getDeviceId(): string {
+  let deviceId = localStorage.getItem(DEVICE_ID_KEY);
+  if (!deviceId) {
+    deviceId = crypto.randomUUID();
+    localStorage.setItem(DEVICE_ID_KEY, deviceId);
+  }
+  return deviceId;
+}
+
+// ─── Admin Login Check ──────────────────────────────────
+
+const PRESS_DURATION_KEY = 'inkahobby_press_duration';
+
+export function getPressDuration(): number {
+  const stored = localStorage.getItem(PRESS_DURATION_KEY);
+  return stored ? parseInt(stored, 10) : 5; // default 5 seconds
+}
+
+export function setPressDuration(seconds: number): void {
+  localStorage.setItem(PRESS_DURATION_KEY, seconds.toString());
+}
+
+export function checkAdminLogin(pressStartTime: number | null): boolean {
+  if (!pressStartTime) return false;
+  const duration = (Date.now() - pressStartTime) / 1000;
+  return duration >= getPressDuration();
+}
+
+// ─── Backup & Restore ──────────────────────────────────
+
+export async function createBackup(withFiles: boolean): Promise<string> {
+  const users = await getUsers();
+  const deviceId = getDeviceId();
+  const pressDuration = getPressDuration();
+  
+  const backup: Record<string, unknown> = {
+    version: 1,
+    deviceId,
+    pressDuration,
+    users: users.map(u => ({
+      id: u.id,
+      username: u.username,
+      email: u.email,
+      pin: u.pin,
+      role: u.role,
+      blocked: u.blocked,
+      createdAt: u.createdAt,
+    })),
+  };
+
+  if (withFiles) {
+    const allFiles = await getAllVaultFiles();
+    backup.files = allFiles.map(f => ({
+      id: f.id,
+      userId: f.userId,
+      type: f.type,
+      data: f.data,
+      thumbnail: f.thumbnail,
+      createdAt: f.createdAt,
+    }));
+  }
+
+  return JSON.stringify(backup);
+}
+
+export async function restoreBackup(jsonString: string): Promise<{ success: boolean; message: string }> {
+  try {
+    const backup = JSON.parse(jsonString);
+    if (!backup.version || !backup.users) {
+      return { success: false, message: 'Archivo de respaldo inválido' };
+    }
+
+    // Restore settings
+    if (backup.deviceId) {
+      localStorage.setItem(DEVICE_ID_KEY, backup.deviceId);
+    }
+    if (backup.pressDuration) {
+      localStorage.setItem(PRESS_DURATION_KEY, backup.pressDuration.toString());
+    }
+
+    // Restore users
+    for (const u of backup.users) {
+      const existing = await getUserByUsername(u.username);
+      if (!existing) {
+        await saveUser({
+          id: u.id,
+          username: u.username,
+          email: u.email,
+          pin: u.pin,
+          role: u.role,
+          blocked: u.blocked || false,
+          createdAt: u.createdAt,
+        });
+      }
+    }
+
+    // Restore files if present
+    if (backup.files) {
+      for (const f of backup.files) {
+        await saveVaultFile({
+          id: f.id,
+          userId: f.userId,
+          type: f.type,
+          data: f.data,
+          thumbnail: f.thumbnail,
+          createdAt: f.createdAt,
+          synced: true,
+        });
+      }
+    }
+
+    return { success: true, message: 'Se encontró tu cuenta. Recuperando tus datos...' };
+  } catch {
+    return { success: false, message: 'Error al restaurar el respaldo' };
+  }
+}
+
+// ─── IndexedDB ────────────────────────────────────────
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -40,7 +175,7 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
-// ─── User Operations ────────────────────────────────────────
+// ─── User Operations ──────────────────────────────────
 
 export async function getUsers(): Promise<LocalUser[]> {
   const db = await openDB();
@@ -67,6 +202,11 @@ export async function saveUser(user: LocalUser): Promise<void> {
 export async function getUserByUsername(username: string): Promise<LocalUser | undefined> {
   const users = await getUsers();
   return users.find(u => u.username === username);
+}
+
+export async function getUserByEmail(email: string): Promise<LocalUser | undefined> {
+  const users = await getUsers();
+  return users.find(u => u.email === email || u.username === email);
 }
 
 export async function getUserById(id: string): Promise<LocalUser | undefined> {
@@ -97,7 +237,7 @@ export async function logoutUser(): Promise<void> {
   localStorage.removeItem(CURRENT_USER_KEY);
 }
 
-// ─── Vault Operations ────────────────────────────────────────
+// ─── Vault Operations ──────────────────────────────────
 
 export async function getVaultFiles(userId: string): Promise<(VaultFile & { userId: string })[]> {
   const db = await openDB();
@@ -144,12 +284,12 @@ export async function deleteVaultFile(fileId: string): Promise<void> {
   });
 }
 
-// ─── Sync Queue Operations ────────────────────────────────
+// ─── Sync Queue Operations ──────────────────────────────
 
 export interface SyncQueueItem {
   id?: number;
   type: 'user' | 'file';
-  data: any;
+  data: unknown;
 }
 
 export async function getSyncQueue(): Promise<SyncQueueItem[]> {

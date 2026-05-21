@@ -10,8 +10,10 @@ datasource db {
 model User {
   id        String     @id @default(cuid())
   username  String     @unique
+  email     String?
   pin       String
   role      String     @default("user")
+  blocked   Boolean    @default(false)
   createdAt DateTime   @default(now())
   files     VaultFile[]
 }
