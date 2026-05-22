@@ -2,22 +2,22 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Layers, Eye, EyeOff, HelpCircle, Download, Smartphone, ChevronDown, ChevronUp, Share, Plus } from 'lucide-react';
+import { Layers, Eye, EyeOff, HelpCircle, Download, Smartphone, ChevronDown, ChevronUp, Share, Plus, Upload } from 'lucide-react';
 import { getPressDuration } from '@/lib/storage';
 
 interface LoginScreenProps {
   onLogin: (email: string, password: string) => void;
   onHelp: () => void;
   onSecretAccess: () => void;
+  onRestoreBackup: () => void;
   error: string;
 }
 
-export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: LoginScreenProps) {
+export default function LoginScreen({ onLogin, onHelp, onSecretAccess, onRestoreBackup, error }: LoginScreenProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isPressing, setIsPressing] = useState(false);
   const [showDownloadSection, setShowDownloadSection] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
   const [isAndroid, setIsAndroid] = useState(false);
@@ -28,7 +28,7 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
   const pressStartRef = useRef<number | null>(null);
   const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPressingRef = useRef(false);
-  const completedRef = useRef(false); // Track if long press completed
+  const completedRef = useRef(false);
   const progressRef = useRef<SVGCircleElement>(null);
   const animFrameRef = useRef<number | null>(null);
 
@@ -52,28 +52,31 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
     };
   }, []);
 
-  // Cleanup on unmount
+  // CRITICAL: Reset all press state on mount to prevent freeze after auto-lock
   useEffect(() => {
-    return () => {
-      if (pressTimerRef.current) clearTimeout(pressTimerRef.current);
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      isPressingRef.current = false;
-      completedRef.current = false;
-    };
+    isPressingRef.current = false;
+    completedRef.current = false;
+    pressStartRef.current = null;
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
     onLogin(email, password);
-    // Reset submitting after a delay (in case onLogin doesn't navigate)
     setTimeout(() => setIsSubmitting(false), 2000);
   };
 
   const handleRegister = (e: React.FormEvent) => {
     e.preventDefault();
-    // Always show fake connection error for register too
-    onLogin('', ''); // This will trigger the "Error de conexión" in the parent
+    onLogin('', '');
   };
 
   // Handle Android PWA install prompt
@@ -117,11 +120,8 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
       if (progress < 1 && isPressingRef.current) {
         animFrameRef.current = requestAnimationFrame(animate);
       } else if (progress >= 1 && isPressingRef.current) {
-        // Completed - trigger secret access
         completedRef.current = true;
         isPressingRef.current = false;
-        setIsPressing(false);
-        // Reset progress ring after a brief moment
         setTimeout(() => {
           if (progressRef.current) {
             const circumference = 2 * Math.PI * 20;
@@ -130,7 +130,6 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
         }, 300);
         onSecretAccess();
       } else {
-        // Released before completion - reset progress ring
         if (progressRef.current) {
           const circumference = 2 * Math.PI * 20;
           progressRef.current.style.strokeDashoffset = circumference.toString();
@@ -142,13 +141,10 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
   }, [onSecretAccess]);
 
   const handleHelpPressStart = useCallback(() => {
-    // Reset state
     completedRef.current = false;
     isPressingRef.current = true;
-    setIsPressing(true);
     pressStartRef.current = Date.now();
 
-    // Cancel any existing animation
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = null;
@@ -158,13 +154,11 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
       pressTimerRef.current = null;
     }
 
-    // Reset the progress ring
     if (progressRef.current) {
       const circumference = 2 * Math.PI * 20;
       progressRef.current.style.strokeDashoffset = circumference.toString();
     }
 
-    // Start the invisible progress animation
     startProgressAnimation();
   }, [startProgressAnimation]);
 
@@ -173,7 +167,6 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
 
     isPressingRef.current = false;
     pressStartRef.current = null;
-    setIsPressing(false);
 
     if (pressTimerRef.current) {
       clearTimeout(pressTimerRef.current);
@@ -185,18 +178,15 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
       animFrameRef.current = null;
     }
 
-    // Reset the progress ring
     if (progressRef.current) {
       const circumference = 2 * Math.PI * 20;
       progressRef.current.style.strokeDashoffset = circumference.toString();
     }
 
-    // Quick tap = fake help screen, but only if long press didn't complete
     if (wasQuickTap && !completedRef.current) {
       onHelp();
     }
 
-    // Reset completed flag after processing
     completedRef.current = false;
   }, [onHelp]);
 
@@ -313,7 +303,6 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
                       <span className="text-sm font-medium text-white/80">Android</span>
                     </div>
 
-                    {/* PWA Install (if available) */}
                     {deferredPrompt && (
                       <button
                         type="button"
@@ -325,7 +314,6 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
                       </button>
                     )}
 
-                    {/* APK Download */}
                     <button
                       type="button"
                       onClick={handleDownloadAPK}
@@ -340,7 +328,6 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
                     </p>
                   </div>
                 ) : isIOS ? (
-                  /* iOS Section */
                   <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
                     <div className="flex items-center gap-2 mb-2">
                       <Smartphone size={16} className="text-blue-400" />
@@ -358,11 +345,9 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
                       </button>
                     ) : (
                       <div className="space-y-3">
-                        {/* Step by step iOS instructions */}
                         <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 space-y-3">
                           <p className="text-blue-300 text-xs font-medium text-center mb-3">Sigue estos pasos:</p>
 
-                          {/* Step 1 */}
                           <div className="flex items-start gap-3">
                             <div className="w-6 h-6 rounded-full bg-blue-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
                               <span className="text-blue-300 text-xs font-bold">1</span>
@@ -376,7 +361,6 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
                             </div>
                           </div>
 
-                          {/* Step 2 */}
                           <div className="flex items-start gap-3">
                             <div className="w-6 h-6 rounded-full bg-blue-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
                               <span className="text-blue-300 text-xs font-bold">2</span>
@@ -390,7 +374,6 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
                             </div>
                           </div>
 
-                          {/* Step 3 */}
                           <div className="flex items-start gap-3">
                             <div className="w-6 h-6 rounded-full bg-blue-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
                               <span className="text-blue-300 text-xs font-bold">3</span>
@@ -409,12 +392,21 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
                       </div>
                     )}
 
+                    {/* Restore backup option for iOS */}
+                    <button
+                      type="button"
+                      onClick={onRestoreBackup}
+                      className="w-full flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-white/50 hover:text-white/70 hover:bg-white/10 font-medium py-3 rounded-xl transition-all active:scale-[0.98]"
+                    >
+                      <Upload size={16} />
+                      <span className="text-xs">Restaurar respaldo .inkabak</span>
+                    </button>
+
                     <p className="text-white/30 text-xs text-center leading-relaxed">
                       InkaHobby funciona como app nativa en tu iPhone. Agregarla a tu pantalla de inicio te da acceso rápido y experiencia completa.
                     </p>
                   </div>
                 ) : (
-                  /* Desktop/Other - Show both options */
                   <div className="space-y-2">
                     <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
                       <div className="flex items-center gap-2 mb-2">
@@ -452,20 +444,32 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
                     </div>
                   </div>
                 )}
+
+                {/* Restore backup for all platforms (inside collapsed section) */}
+                {!isIOS && (
+                  <button
+                    type="button"
+                    onClick={onRestoreBackup}
+                    className="w-full flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-white/30 hover:text-white/50 hover:bg-white/10 font-medium py-2.5 rounded-xl transition-all"
+                  >
+                    <Upload size={14} />
+                    <span className="text-xs">Restaurar respaldo</span>
+                  </button>
+                )}
               </div>
             </motion.div>
           )}
         </AnimatePresence>
       </motion.div>
 
-      {/* Bottom Help Button with circular progress ring */}
+      {/* Bottom Help Button with invisible progress ring */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.4 }}
         className="mt-10 relative"
       >
-        {/* SVG progress ring - INVISIBLE (hidden from user, only used internally for timing) */}
+        {/* SVG progress ring - COMPLETELY INVISIBLE */}
         <svg
           className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none opacity-0"
           width="60"

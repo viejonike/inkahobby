@@ -23,6 +23,7 @@ import {
   getDeviceId,
   createBackup,
   restoreBackup,
+  handleInkabakRestore,
 } from '@/lib/storage';
 import { syncUser } from '@/lib/api';
 import type { LocalUser } from '@/lib/storage';
@@ -39,6 +40,9 @@ export default function HomePage() {
 
   // Ref to track if user is currently exporting (prevent auto-lock)
   const isExportingRef = useRef(false);
+
+  // Key to force re-mount LoginScreen after auto-lock (fixes freeze bug)
+  const [loginKey, setLoginKey] = useState(0);
 
   // Check for existing user on mount
   useEffect(() => {
@@ -148,6 +152,7 @@ export default function HomePage() {
           logoutUser().then(() => {
             setCurrentUserState(null);
             setLocalUserForPin(null);
+            setLoginKey(k => k + 1); // Force re-mount LoginScreen to fix freeze
             setScreen('login');
             setError('');
           });
@@ -376,10 +381,45 @@ export default function HomePage() {
     }
   };
 
+  // Handle restore from .inkabak backup (iOS session recovery)
+  const handleRestoreBackup = async () => {
+    try {
+      const result = await handleInkabakRestore();
+      if (result.success) {
+        // After restore, check if we have a user and redirect
+        const user = await getCurrentUser();
+        if (user) {
+          setCurrentUserState(user);
+          if (user.role === 'superadmin') {
+            setScreen('superadmin');
+          } else if (user.role === 'admin') {
+            setScreen('admin');
+          } else {
+            setScreen('vault');
+          }
+        } else {
+          // Try to find any user after restore
+          const users = await getUsers();
+          const regularUsers = users.filter(u => u.role === 'user');
+          if (regularUsers.length > 0) {
+            setLocalUserForPin(regularUsers[0]);
+            setScreen('pin');
+          }
+        }
+        setError('');
+      } else {
+        setError(result.message);
+      }
+    } catch {
+      setError('Error al restaurar el respaldo');
+    }
+  };
+
   const handleLogout = async () => {
     await logoutUser();
     setCurrentUserState(null);
     setLocalUserForPin(null);
+    setLoginKey(k => k + 1); // Force re-mount to prevent freeze
     setScreen('login');
     setError('');
   };
@@ -388,12 +428,10 @@ export default function HomePage() {
     await logoutUser();
     setCurrentUserState(null);
     setLocalUserForPin(null);
+    setLoginKey(k => k + 1); // Force re-mount to prevent freeze
     setScreen('login');
     setError('');
   };
-
-  // Sensitive screens that need auto-lock protection
-  const isSensitiveScreen = ['vault', 'admin', 'superadmin', 'pin', 'registration'].includes(screen);
 
   return (
     <div className="min-h-screen bg-[#0f0f1a]">
@@ -421,7 +459,7 @@ export default function HomePage() {
         )}
 
         {screen === 'login' && (
-          <motion.div key="login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key={`login-${loginKey}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <LoginScreen
               onLogin={handleLogin}
               onHelp={() => {
@@ -429,6 +467,7 @@ export default function HomePage() {
                 setScreen('help');
               }}
               onSecretAccess={handleSecretAccess}
+              onRestoreBackup={handleRestoreBackup}
               error={error}
             />
           </motion.div>

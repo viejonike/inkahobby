@@ -204,6 +204,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
   }) => {
     // Set exporting flag to prevent auto-lock while file picker is open
     isExportingRef.current = true;
+    recordActivity();
 
     const input = document.createElement('input');
     input.type = 'file';
@@ -222,7 +223,6 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
     input.onchange = async (e) => {
       const fileList = (e.target as HTMLInputElement).files;
       if (!fileList || fileList.length === 0) {
-        // Cleanup when user cancels
         document.body.removeChild(input);
         isExportingRef.current = false;
         return;
@@ -237,7 +237,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
 
       await processFiles(fileList);
       document.body.removeChild(input);
-      // Reset exporting flag after a short delay to allow app to stabilize
+      recordActivity();
       setTimeout(() => {
         isExportingRef.current = false;
       }, 1000);
@@ -250,12 +250,13 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
           document.body.removeChild(input);
         }
         isExportingRef.current = false;
+        recordActivity();
       }, 1000);
     };
     input.addEventListener('cancel', onCancelHandler);
 
     input.click();
-  }, [processFiles, isExportingRef]);
+  }, [processFiles, isExportingRef, recordActivity]);
 
   const handleImportFromGallery = () => {
     openFileInput({ accept: 'image/*,video/*', multiple: true });
@@ -299,30 +300,44 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
     if (filesToExport.length === 0) return;
 
     isExportingRef.current = true;
+    recordActivity();
     setShowExportSheet(false);
 
     try {
-      if (exportType === 'gallery' && navigator.share && filesToExport.length === 1) {
-        // Use Web Share API for single file to gallery
-        const file = filesToExport[0];
-        const response = await fetch(file.data);
-        const blob = await response.blob();
-        const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
-        const mimeType = file.type === 'photo' ? 'image/jpeg' : file.type === 'video' ? 'video/mp4' : 'application/octet-stream';
-        const webFile = new File([blob], `${file.type}_${file.id.slice(0, 8)}.${extension}`, { type: mimeType });
+      if (exportType === 'gallery' && navigator.share) {
+        // Use Web Share API - supports multiple files on modern browsers
+        const shareFiles: File[] = [];
+        for (const file of filesToExport) {
+          try {
+            const response = await fetch(file.data);
+            const blob = await response.blob();
+            const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
+            const mimeType = file.type === 'photo' ? 'image/jpeg' : file.type === 'video' ? 'video/mp4' : 'application/octet-stream';
+            shareFiles.push(new File([blob], `${file.type}_${file.id.slice(0, 8)}.${extension}`, { type: mimeType }));
+          } catch {
+            // Skip files that can't be fetched
+          }
+        }
 
-        try {
-          await navigator.share({
-            files: [webFile],
-          });
-        } catch {
-          // User cancelled or share failed, fall back to download
-          const link = document.createElement('a');
-          link.href = file.data;
-          link.download = `${file.type}_${file.id.slice(0, 8)}.${extension}`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
+        if (shareFiles.length > 0) {
+          try {
+            await navigator.share({
+              files: shareFiles,
+            });
+          } catch {
+            // User cancelled or share failed, fall back to download
+            for (const file of shareFiles) {
+              const url = URL.createObjectURL(file);
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = file.name;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              URL.revokeObjectURL(url);
+              await new Promise(resolve => setTimeout(resolve, 300));
+            }
+          }
         }
       } else {
         // Download multiple files
@@ -334,7 +349,6 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
           document.body.appendChild(link);
           link.click();
           document.body.removeChild(link);
-          // Small delay between downloads to prevent browser blocking
           if (filesToExport.indexOf(file) < filesToExport.length - 1) {
             await new Promise(resolve => setTimeout(resolve, 300));
           }
@@ -361,6 +375,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
         variant: 'destructive',
       });
     } finally {
+      recordActivity();
       setTimeout(() => {
         isExportingRef.current = false;
       }, 1000);
@@ -370,6 +385,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
   // Export single file from viewer
   const handleViewerExport = async (file: VaultFile & { userId: string }) => {
     isExportingRef.current = true;
+    recordActivity();
 
     try {
       const extension = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
@@ -416,6 +432,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
         variant: 'destructive',
       });
     } finally {
+      recordActivity();
       setTimeout(() => {
         isExportingRef.current = false;
       }, 1000);
@@ -467,11 +484,13 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
   const handleBackup = async (withFiles: boolean) => {
     try {
       const backupStr = await createBackup(withFiles);
-      const blob = new Blob([backupStr], { type: 'application/json' });
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      const ext = isIOS ? 'inkabak' : 'json';
+      const blob = new Blob([backupStr], { type: isIOS ? 'application/octet-stream' : 'application/json' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `inkahobby_backup_${withFiles ? 'full' : 'quick'}_${new Date().toISOString().slice(0, 10)}.json`;
+      link.download = `inkahobby_backup_${withFiles ? 'full' : 'quick'}_${new Date().toISOString().slice(0, 10)}.${ext}`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -524,6 +543,19 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
           {selectionMode ? (
             <>
               <button
+                onClick={() => {
+                  // Select all visible files
+                  if (selectedIds.size === filteredFiles.length) {
+                    setSelectedIds(new Set());
+                  } else {
+                    setSelectedIds(new Set(filteredFiles.map(f => f.id)));
+                  }
+                }}
+                className="text-white/30 hover:text-white/60 transition-colors p-2 text-xs"
+              >
+                {selectedIds.size === filteredFiles.length ? 'Ninguno' : 'Todos'}
+              </button>
+              <button
                 onClick={() => setShowExportSheet(true)}
                 disabled={selectedIds.size === 0}
                 className="text-green-400/70 hover:text-green-400 transition-colors p-2 disabled:opacity-30"
@@ -563,7 +595,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
       {selectionMode && (
         <div className="bg-[#1a1a2e]/80 border-b border-white/10 px-4 py-2">
           <p className="text-white/50 text-xs text-center">
-            {selectedIds.size} seleccionado{selectedIds.size !== 1 ? 's' : ''}
+            {selectedIds.size} seleccionado{selectedIds.size !== 1 ? 's' : ''} (máx. {MAX_FILES_PER_EXPORT} para exportar)
           </p>
         </div>
       )}
@@ -750,7 +782,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
               </div>
               <div className="text-left flex-1">
                 <p className="text-white text-sm font-medium">Desde Galería</p>
-                <p className="text-white/40 text-xs">Selecciona fotos y videos de tu galería</p>
+                <p className="text-white/40 text-xs">Selecciona fotos y videos (hasta {MAX_FILES_PER_IMPORT})</p>
               </div>
               <ChevronRight size={16} className="text-white/20" />
             </button>
@@ -792,7 +824,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
               </div>
               <div className="text-left flex-1">
                 <p className="text-white text-sm font-medium">Desde Archivos</p>
-                <p className="text-white/40 text-xs">Explora y selecciona archivos de tu dispositivo</p>
+                <p className="text-white/40 text-xs">Explora y selecciona archivos (hasta {MAX_FILES_PER_IMPORT})</p>
               </div>
               <ChevronRight size={16} className="text-white/20" />
             </button>
