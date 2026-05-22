@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
@@ -16,15 +17,21 @@ model User {
   blocked   Boolean    @default(false)
   createdAt DateTime   @default(now())
   files     VaultFile[]
+
+  @@index([username])
+  @@index([role])
 }
 
 model VaultFile {
   id        String   @id @default(cuid())
   userId    String
   type      String   // "photo", "video", or "file"
-  data      String   // base64 encoded
-  thumbnail String?  // base64 thumbnail
+  data      String   @db.Text // base64 encoded - can be very large
+  thumbnail String?  @db.Text // base64 thumbnail
   createdAt DateTime @default(now())
   synced    Boolean  @default(false)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
 }

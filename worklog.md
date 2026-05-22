@@ -29,3 +29,22 @@ Stage Summary:
 - All API endpoints tested and working through public URL
 - Users can register from anywhere in the world, data syncs to server
 - Admin panel sees all synced users regardless of their location
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Create permanent free deployment guide (Vercel + Neon PostgreSQL)
+
+Work Log:
+- Migrated Prisma schema from SQLite to PostgreSQL (provider, @db.Text, directUrl, indexes)
+- Updated package.json with postinstall script for Prisma generate (needed for Vercel)
+- Created .env with PostgreSQL template and .env.example
+- Generated comprehensive 12-page PDF deployment guide in Spanish
+- Guide covers: Neon setup, GitHub upload, Vercel deployment, DB initialization, APK building, testing
+
+Stage Summary:
+- Prisma schema updated to postgresql with @db.Text for large fields and proper indexes
+- package.json updated with postinstall and db:migrate:prod scripts
+- PDF Guide: /home/z/my-project/download/InkaHobby_Guia_Despliegue_Gratuito.pdf (12 pages, 88KB)
+- Architecture: Vercel (free hosting) + Neon PostgreSQL (free database) + APK with hardcoded URL
+- No IP configuration needed, works globally like Facebook
