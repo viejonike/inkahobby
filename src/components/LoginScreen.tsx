@@ -465,11 +465,12 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
         transition={{ delay: 0.4 }}
         className="mt-10 relative"
       >
-        {/* SVG progress ring - appears during long press */}
+        {/* SVG progress ring - INVISIBLE (hidden from user, only used internally for timing) */}
         <svg
-          className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none transition-opacity duration-300 ${isPressing ? 'opacity-100' : 'opacity-0'}`}
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none opacity-0"
           width="60"
           height="60"
+          style={{ visibility: 'hidden' }}
         >
           <circle
             cx="30"
@@ -485,7 +486,6 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, error }: 
               strokeDashoffset: 2 * Math.PI * 20,
               transform: 'rotate(-90deg)',
               transformOrigin: '30px 30px',
-              transition: 'opacity 0.3s ease',
             }}
           />
         </svg>
