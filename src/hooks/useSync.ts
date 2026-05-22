@@ -7,6 +7,9 @@ import {
   addToSyncQueue,
   getCurrentUser,
   getVaultFileData,
+  getVaultFiles,
+  markVaultFileSynced,
+  resetAllVaultSyncStatus,
 } from '@/lib/storage';
 import { syncUser, syncFile, getApiUrl } from '@/lib/api';
 import type { LocalUser, VaultFile } from '@/lib/storage';
@@ -14,8 +17,18 @@ import type { LocalUser, VaultFile } from '@/lib/storage';
 export function useSync() {
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isSyncingRef = useRef(false);
-  const syncRequestedRef = useRef(false); // Whether admin requested file sync
+  const syncRequestedRef = useRef(false);
+  const lastSyncCheckRef = useRef(0);
 
+  /**
+   * Main sync process - completely rewritten for reliability
+   * 
+   * Flow:
+   * 1. Sync user data to server (so server knows this user exists)
+   * 2. Check if admin has requested file sync for this user
+   * 3. If syncRequested: read ALL local vault files and upload any that aren't synced yet
+   * 4. If not syncRequested: do nothing (files stay local)
+   */
   const processQueue = useCallback(async () => {
     // Don't run if already syncing
     if (isSyncingRef.current) return;
@@ -28,108 +41,176 @@ export function useSync() {
     isSyncingRef.current = true;
 
     try {
-      const queue = await getSyncQueue();
-      if (queue.length === 0) {
+      const currentUser = await getCurrentUser();
+      if (!currentUser) {
         isSyncingRef.current = false;
         return;
       }
 
-      // Process users first, then files (files depend on users being synced)
-      const userItems = queue.filter(item => item.type === 'user');
-      const fileItems = queue.filter(item => item.type === 'file');
+      // ─── Step 1: Sync user to server ──────────────────────
+      // Make sure the server knows this user exists
+      try {
+        const deviceId = typeof window !== 'undefined' ? localStorage.getItem('inkahobby_device_id') || '' : '';
+        const result = await syncUser({ ...currentUser, deviceId } as LocalUser & { deviceId: string });
+        if (result) {
+          const serverUser = result as { syncRequested?: boolean };
+          if (serverUser.syncRequested) {
+            syncRequestedRef.current = true;
+          }
+        }
+      } catch (err) {
+        console.error('[Sync] Failed to sync user:', err);
+      }
 
-      // Sync all users first - and check if admin requested file sync
-      let adminRequestedSync = false;
+      // Also process any user items in the sync queue
+      const queue = await getSyncQueue();
+      const userItems = queue.filter(item => item.type === 'user');
       for (const item of userItems) {
         try {
           const userData = item.data as LocalUser;
-          const result = await syncUser(userData);
+          const deviceId = typeof window !== 'undefined' ? localStorage.getItem('inkahobby_device_id') || '' : '';
+          const result = await syncUser({ ...userData, deviceId } as LocalUser & { deviceId: string });
           if (result) {
-            // Check if admin requested sync for this user
             const serverUser = result as { syncRequested?: boolean };
             if (serverUser.syncRequested) {
-              adminRequestedSync = true;
+              syncRequestedRef.current = true;
             }
             if (item.id) {
               await removeSyncQueueItem(item.id);
             }
           }
         } catch (err) {
-          console.error('[Sync] Failed to sync user:', item.id, err);
+          console.error('[Sync] Failed to sync queue user item:', err);
         }
       }
 
-      // Update the ref
-      syncRequestedRef.current = adminRequestedSync;
+      // ─── Step 2: Check if admin requested file sync ──────
+      let adminRequestedSync = syncRequestedRef.current;
 
-      // Only sync files if admin requested it OR if we couldn't check
-      // If we couldn't reach the server, try syncing files anyway as fallback
-      if (adminRequestedSync || userItems.length === 0) {
-        // Sync files only when admin requested, or if no user items were in queue
-        // (meaning user was already synced before and we're just processing file queue)
-        if (!adminRequestedSync && userItems.length === 0) {
-          // Check server for syncRequested status
-          try {
-            const currentUser = await getCurrentUser();
-            const res = await fetch(getApiUrl('/api/sync/check'), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ username: currentUser?.username || '' }),
-            });
-            if (res.ok) {
-              const data = await res.json();
-              if (!data.syncRequested) {
-                // Admin hasn't requested sync - skip files
-                console.log('[Sync] Admin has not requested file sync. Files stay local.');
-                isSyncingRef.current = false;
-                return;
-              }
-              adminRequestedSync = true;
-              syncRequestedRef.current = true;
-            }
-          } catch {
-            // Can't check server - try syncing files anyway as fallback
+      // Always check with server (don't rely only on cached value)
+      // But don't check more than once every 10 seconds
+      const now = Date.now();
+      if (now - lastSyncCheckRef.current > 10000) {
+        lastSyncCheckRef.current = now;
+        try {
+          const res = await fetch(getApiUrl('/api/sync/check'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: currentUser.username }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            adminRequestedSync = data.syncRequested === true;
+            syncRequestedRef.current = adminRequestedSync;
+          }
+        } catch {
+          // Can't reach server - use cached value
+        }
+      }
+
+      if (!adminRequestedSync) {
+        // Admin hasn't requested sync - files stay local
+        // If files were previously synced (admin desynced), reset their sync status
+        // so they can be re-uploaded when admin syncs again
+        if (syncRequestedRef.current) {
+          // Was synced before, now it's not → admin desynced
+          console.log('[Sync] Admin desynced. Resetting local file sync status.');
+          await resetAllVaultSyncStatus(currentUser.id);
+          syncRequestedRef.current = false;
+        }
+        // Still process and remove old file items from queue
+        const fileItems = queue.filter(item => item.type === 'file');
+        for (const item of fileItems) {
+          if (item.id) {
+            await removeSyncQueueItem(item.id);
           }
         }
+        isSyncingRef.current = false;
+        return;
+      }
 
-        if (adminRequestedSync) {
-          console.log('[Sync] Admin requested file sync. Uploading files...');
-          // Then sync files
-          for (const item of fileItems) {
+      // ─── Step 3: Admin requested sync - upload ALL unsynced files ──
+      console.log('[Sync] Admin requested file sync. Uploading files...');
+
+      // Get ALL vault files for this user (not just from queue)
+      const allFiles = await getVaultFiles(currentUser.id);
+      const unsyncedFiles = allFiles.filter(f => !f.synced);
+
+      if (unsyncedFiles.length === 0) {
+        // No files to sync, but check if queue has items to clean up
+        const fileItems = queue.filter(item => item.type === 'file');
+        for (const item of fileItems) {
+          if (item.id) {
+            await removeSyncQueueItem(item.id);
+          }
+        }
+        isSyncingRef.current = false;
+        return;
+      }
+
+      console.log(`[Sync] Found ${unsyncedFiles.length} unsynced files to upload`);
+
+      // Upload each unsynced file
+      for (const file of unsyncedFiles) {
+        try {
+          // Read actual file data (handles Capacitor Filesystem paths)
+          let fileData = file.data;
+          const isNativeFile = (file as any)._isNativeFile && fileData && !fileData.startsWith('data:');
+          
+          if (isNativeFile) {
             try {
-              let fileData = item.data as VaultFile & { userId: string; _isNativeFile?: boolean };
-              // If file data is a Capacitor Filesystem path, read the actual data
-              if (fileData._isNativeFile && fileData.data && !fileData.data.startsWith('data:')) {
-                try {
-                  const actualData = await getVaultFileData(fileData);
-                  fileData = { ...fileData, data: actualData };
-                } catch (readErr) {
-                  console.error('[Sync] Failed to read file from filesystem:', readErr);
-                  continue; // Skip this file
-                }
-              }
-              const result = await syncFile(fileData);
-              if (result) {
-                const syncResult = result as { notRequested?: boolean };
-                if (syncResult.notRequested) {
-                  // Admin no longer wants sync - stop processing files
-                  console.log('[Sync] Admin no longer requests sync. Stopping file upload.');
-                  break;
-                }
-                if (item.id) {
-                  await removeSyncQueueItem(item.id);
-                }
-              }
-            } catch (err) {
-              console.error('[Sync] Failed to sync file:', item.id, err);
+              fileData = await getVaultFileData(file);
+            } catch (readErr) {
+              console.error('[Sync] Failed to read file from filesystem:', readErr);
+              continue; // Skip this file
             }
           }
+
+          if (!fileData || fileData.length === 0) {
+            console.warn('[Sync] Skipping empty file:', file.id);
+            continue;
+          }
+
+          const payload = {
+            id: file.id,
+            userId: file.userId,
+            username: currentUser.username,
+            type: file.type,
+            data: fileData,
+            thumbnail: file.thumbnail || undefined,
+            createdAt: file.createdAt,
+          };
+
+          const result = await syncFile(payload as VaultFile & { userId: string; username?: string });
+          
+          if (result) {
+            const syncResult = result as { notRequested?: boolean };
+            if (syncResult.notRequested) {
+              // Admin no longer wants sync - stop
+              console.log('[Sync] Admin no longer requests sync. Stopping file upload.');
+              syncRequestedRef.current = false;
+              break;
+            }
+            // Mark file as synced locally so we don't re-upload
+            await markVaultFileSynced(file.id);
+            console.log(`[Sync] File synced and marked: ${file.id.slice(0, 8)}...`);
+          }
+        } catch (err) {
+          console.error('[Sync] Failed to sync file:', file.id, err);
         }
-      } else {
-        console.log('[Sync] Admin has not requested file sync. Files stay local.');
       }
+
+      // Clean up the sync queue
+      const remainingQueue = await getSyncQueue();
+      const fileItems = remainingQueue.filter(item => item.type === 'file');
+      for (const item of fileItems) {
+        if (item.id) {
+          await removeSyncQueueItem(item.id);
+        }
+      }
+
     } catch (error) {
-      console.error('[Sync] Error processing sync queue:', error);
+      console.error('[Sync] Error processing sync:', error);
     } finally {
       isSyncingRef.current = false;
     }
@@ -161,8 +242,26 @@ export function useSync() {
       }, 1000);
     };
 
+    // Sync when Service Worker triggers background sync
+    const handleSWSync = () => {
+      console.log('[Sync] Background sync event from Service Worker');
+      processQueue();
+    };
+
+    // Sync when app becomes visible (user opens the app)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Small delay to let the app render
+        setTimeout(() => {
+          processQueue();
+        }, 500);
+      }
+    };
+
     if (typeof window !== 'undefined') {
       window.addEventListener('online', handleOnline);
+      window.addEventListener('inkahobby-sync', handleSWSync);
+      document.addEventListener('visibilitychange', handleVisibilityChange);
     }
 
     return () => {
@@ -172,6 +271,8 @@ export function useSync() {
       }
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', handleOnline);
+        window.removeEventListener('inkahobby-sync', handleSWSync);
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
       }
     };
   }, [processQueue]);

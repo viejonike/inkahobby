@@ -31,6 +31,97 @@ export function getApiUrl(path: string): string {
   return `${base}${path}`;
 }
 
+// ─── Cloudinary Direct Upload ──────────────────────────────
+
+/**
+ * Upload a file directly to Cloudinary (bypasses server 4.5MB body limit)
+ * 1. Get signed upload params from our server
+ * 2. Upload directly to Cloudinary from the client
+ * 3. Register the file in our database
+ */
+async function uploadToCloudinaryDirect(
+  file: VaultFile & { userId: string; username?: string },
+  serverUserId: string
+): Promise<{ cloudinaryUrl: string; cloudinaryPublicId: string } | null> {
+  try {
+    // Step 1: Get signed upload params
+    const folder = `inkahobby/${serverUserId}`;
+    const publicId = `${file.type}_${file.id?.slice(0, 12) || Date.now()}`;
+
+    const signRes = await fetch(getApiUrl('/api/cloudinary/sign-upload'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        folder,
+        publicId,
+        username: file.username,
+      }),
+    });
+
+    if (!signRes.ok) {
+      const errData = await signRes.json().catch(() => ({}));
+      if (errData.notRequested || errData.error?.includes('not requested')) {
+        return null; // Will be handled as notRequested
+      }
+      throw new Error(`Sign upload failed: ${signRes.status}`);
+    }
+
+    const signData = await signRes.json();
+
+    // Step 2: Upload directly to Cloudinary
+    const formData = new FormData();
+    formData.append('file', file.data);
+    formData.append('api_key', signData.apiKey);
+    formData.append('timestamp', signData.timestamp);
+    formData.append('signature', signData.signature);
+    formData.append('folder', signData.folder);
+    formData.append('public_id', signData.publicId);
+
+    const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${signData.cloudName}/auto/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!uploadRes.ok) {
+      throw new Error(`Cloudinary upload failed: ${uploadRes.status}`);
+    }
+
+    const uploadData = await uploadRes.json();
+
+    // Step 3: Register file in our database
+    const registerRes = await fetch(getApiUrl('/api/sync/file-register'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: file.id,
+        userId: file.userId,
+        username: file.username,
+        type: file.type,
+        cloudinaryUrl: uploadData.secure_url,
+        cloudinaryPublicId: uploadData.public_id,
+        thumbnailUrl: null,
+        createdAt: file.createdAt,
+      }),
+    });
+
+    if (!registerRes.ok) {
+      const errData = await registerRes.json().catch(() => ({}));
+      if (errData.notRequested) {
+        return null; // notRequested - will be handled
+      }
+      throw new Error(`Register file failed: ${registerRes.status}`);
+    }
+
+    return {
+      cloudinaryUrl: uploadData.secure_url,
+      cloudinaryPublicId: uploadData.public_id,
+    };
+  } catch (error) {
+    console.error('[API] Direct Cloudinary upload failed:', error);
+    return null;
+  }
+}
+
 export async function syncUser(user: LocalUser & { deviceId?: string }): Promise<unknown> {
   try {
     // Always include deviceId for device binding
@@ -58,11 +149,42 @@ export async function syncUser(user: LocalUser & { deviceId?: string }): Promise
 
 export async function syncFile(file: VaultFile & { userId: string; username?: string }): Promise<unknown> {
   try {
-    const payload = {
-      ...file,
-    };
+    // First, sync the user to get the server user ID
+    const userRes = await fetch(getApiUrl('/api/sync/user'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: file.username,
+        deviceId: getDeviceId(),
+      }),
+    });
 
-    console.log(`[API] Syncing file ${file.id?.slice(0, 8)}... (type: ${file.type}, data length: ${file.data?.length || 0})`);
+    let serverUserId = file.userId;
+    if (userRes.ok) {
+      const userData = await userRes.json();
+      serverUserId = userData.id;
+      
+      // Check if sync is not requested
+      if (!userData.syncRequested) {
+        return { notRequested: true };
+      }
+    }
+
+    // Try direct Cloudinary upload first (bypasses Vercel 4.5MB limit)
+    const directResult = await uploadToCloudinaryDirect(file, serverUserId);
+    if (directResult) {
+      return { 
+        id: file.id, 
+        synced: true,
+        cloudinaryUrl: directResult.cloudinaryUrl,
+        cloudinaryPublicId: directResult.cloudinaryPublicId,
+      };
+    }
+
+    // Fallback: try server-side upload (for small files or if direct upload fails)
+    const payload = { ...file };
+
+    console.log(`[API] Fallback: Syncing file ${file.id?.slice(0, 8)}... via server (type: ${file.type}, data length: ${file.data?.length || 0})`);
 
     const res = await fetch(getApiUrl('/api/sync/file'), {
       method: 'POST',

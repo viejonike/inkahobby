@@ -412,6 +412,40 @@ export async function getVaultFileData(file: VaultFile & { userId: string; _isNa
   return file.data;
 }
 
+export async function markVaultFileSynced(fileId: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('vault', 'readwrite');
+    const store = tx.objectStore('vault');
+    const request = store.get(fileId);
+    request.onsuccess = () => {
+      const file = request.result;
+      if (file) {
+        file.synced = true;
+        store.put(file);
+      }
+      tx.oncomplete = () => resolve();
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function resetAllVaultSyncStatus(userId: string): Promise<void> {
+  // Reset all files for this user so they can be re-synced when admin requests again
+  const files = await getVaultFiles(userId);
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('vault', 'readwrite');
+    const store = tx.objectStore('vault');
+    for (const file of files) {
+      file.synced = false;
+      store.put(file);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export async function deleteVaultFile(fileId: string): Promise<void> {
   // For native: also delete from filesystem
   if (isNative()) {

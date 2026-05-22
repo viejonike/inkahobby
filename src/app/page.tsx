@@ -136,6 +136,7 @@ export default function HomePage() {
   // Auto-lock: detect when app goes to background and comes back
   const wasHiddenRef = useRef(false);
   const hiddenScreenRef = useRef<Screen>('login');
+  const hiddenTimeRef = useRef(0);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -143,12 +144,19 @@ export default function HomePage() {
         // Record that the page was hidden and which screen we were on
         wasHiddenRef.current = true;
         hiddenScreenRef.current = screen;
+        hiddenTimeRef.current = Date.now();
       } else if (document.visibilityState === 'visible' && wasHiddenRef.current) {
-        // Page became visible again - auto-lock if we were on a sensitive screen
-        // BUT NOT if user is currently exporting (file picker open)
+        // Page became visible again
         wasHiddenRef.current = false;
         const prevScreen = hiddenScreenRef.current;
-        if (!isExportingRef.current && ['vault', 'admin', 'superadmin', 'pin', 'registration'].includes(prevScreen)) {
+        const timeHidden = Date.now() - hiddenTimeRef.current;
+        
+        // Only auto-lock if:
+        // 1. User is not currently exporting (file picker open)
+        // 2. We were on a sensitive screen
+        // 3. The app was hidden for more than 30 seconds (brief background trips don't lock)
+        // This allows sync to work when user briefly backgrounds the app
+        if (!isExportingRef.current && timeHidden > 30000 && ['vault', 'admin', 'superadmin', 'pin', 'registration'].includes(prevScreen)) {
           logoutUser().then(() => {
             setCurrentUserState(null);
             setLocalUserForPin(null);
