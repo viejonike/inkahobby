@@ -76,6 +76,8 @@ export default function HomePage() {
                   createdAt: serverUser.createdAt,
                 };
                 await saveUser(updatedUser);
+                // User confirmed on server - set flag for sync system
+                try { localStorage.setItem('inkahobby_user_on_server', 'true'); } catch {}
 
                 if (updatedUser.blocked) {
                   await logoutUser();
@@ -301,6 +303,8 @@ export default function HomePage() {
             createdAt: serverUser.createdAt,
           };
           await saveUser(updatedUser);
+          // User confirmed on server - set flag for sync system
+          try { localStorage.setItem('inkahobby_user_on_server', 'true'); } catch {}
 
           if (updatedUser.blocked) {
             setError('Cuenta bloqueada.');
@@ -368,8 +372,42 @@ export default function HomePage() {
       await setCurrentUser(newUser.id);
       setCurrentUserState(newUser);
 
-      // Try to sync to server immediately
-      syncUser({ ...newUser, deviceId } as LocalUser & { deviceId: string }).catch(() => {});
+      // Store the API URL in localStorage as backup for APK
+      try {
+        const apiUrl = getApiUrl('/api');
+        if (apiUrl && apiUrl.startsWith('http')) {
+          const baseUrl = apiUrl.replace('/api', '');
+          localStorage.setItem('inkahobby_api_url', baseUrl);
+        }
+      } catch {}
+
+      // Reset user-on-server flag so sync system will verify
+      try { localStorage.removeItem('inkahobby_user_on_server'); } catch {}
+
+      // Try to sync to server immediately with RETRIES
+      // This is critical for APK - the user MUST exist on the server
+      const syncUserWithRetry = async (retries = 3): Promise<void> => {
+        for (let i = 0; i < retries; i++) {
+          try {
+            const result = await syncUser({ ...newUser, deviceId } as LocalUser & { deviceId: string });
+            if (result) {
+              console.log(`[Register] User synced to server on attempt ${i + 1}`);
+              try { localStorage.setItem('inkahobby_user_on_server', 'true'); } catch {}
+              return;
+            }
+          } catch (err) {
+            console.warn(`[Register] User sync attempt ${i + 1} failed:`, err);
+          }
+          // Wait before retry (1s, 2s, 3s)
+          if (i < retries - 1) {
+            await new Promise(resolve => setTimeout(resolve, (i + 1) * 1000));
+          }
+        }
+        console.warn('[Register] Could not sync user to server after retries. Sync will retry in background.');
+      };
+
+      // Run sync in background (don't block registration)
+      syncUserWithRetry().catch(() => {});
       processQueue().catch(() => {});
 
       // Auto-download .inkabak backup for iOS

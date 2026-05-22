@@ -11,12 +11,13 @@ import {
   markVaultFileSynced,
   resetAllVaultSyncStatus,
 } from '@/lib/storage';
-import { syncUser, syncFile, getApiUrl } from '@/lib/api';
+import { syncUser, syncFile, getApiUrl, testServerConnection } from '@/lib/api';
 import type { LocalUser, VaultFile } from '@/lib/storage';
 
-// localStorage key for tracking sync state across app restarts
+// localStorage keys for tracking sync state across app restarts
 const SYNC_REQUESTED_KEY = 'inkahobby_sync_requested';
 const LAST_SYNC_USER_KEY = 'inkahobby_last_sync_user';
+const USER_ON_SERVER_KEY = 'inkahobby_user_on_server'; // NEW: tracks if user exists on server
 
 // Track consecutive failures to implement backoff
 const SYNC_FAIL_COUNT_KEY = 'inkahobby_sync_fail_count';
@@ -49,6 +50,25 @@ export function useSync() {
   }, []);
 
   /**
+   * Track whether the user is confirmed to exist on the server.
+   * This is critical for APK reliability - if the user isn't on the server,
+   * we need to keep trying to sync them before checking sync status.
+   */
+  const isUserOnServer = useCallback((): boolean => {
+    try {
+      return localStorage.getItem(USER_ON_SERVER_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const setUserOnServer = useCallback((value: boolean): void => {
+    try {
+      localStorage.setItem(USER_ON_SERVER_KEY, value.toString());
+    } catch {}
+  }, []);
+
+  /**
    * Get/set consecutive failure count for backoff
    */
   const getFailCount = useCallback((): number => {
@@ -73,10 +93,44 @@ export function useSync() {
   }, []);
 
   /**
+   * Ensure user exists on the server.
+   * This is the FIRST step before any sync can work.
+   * Retries aggressively because without the user on the server,
+   * NOTHING else can work.
+   */
+  const ensureUserOnServer = useCallback(async (currentUser: LocalUser): Promise<string | null> => {
+    // If already confirmed on server, quick check
+    if (isUserOnServer()) {
+      return currentUser.id; // Return local ID as placeholder
+    }
+
+    console.log('[Sync] User not confirmed on server. Attempting to sync user...');
+
+    const deviceId = typeof window !== 'undefined' ? localStorage.getItem('inkahobby_device_id') || '' : '';
+    const result = await syncUser({ ...currentUser, deviceId } as LocalUser & { deviceId: string });
+
+    if (result) {
+      const serverUser = result as { id?: string; syncRequested?: boolean; username?: string };
+      console.log(`[Sync] User confirmed on server! ID: ${serverUser.id}, username: ${serverUser.username}`);
+      setUserOnServer(true);
+
+      // Also update the sync requested state from server
+      if (serverUser.syncRequested) {
+        setPersistedSyncState(true);
+      }
+
+      return serverUser.id || currentUser.id;
+    }
+
+    console.warn('[Sync] Failed to sync user to server. Will retry on next cycle.');
+    return null;
+  }, [isUserOnServer, setUserOnServer, setPersistedSyncState]);
+
+  /**
    * Main sync process - rewritten for maximum reliability on APK and PWA
    *
    * Flow:
-   * 1. Sync user data to server (so server knows this user exists)
+   * 1. ENSURE user exists on server (critical for APK - retries until confirmed)
    * 2. Check if admin has requested file sync for this user
    * 3. Detect state changes (sync requested → not requested → requested again)
    *    and reset file sync statuses when admin re-requests sync
@@ -105,27 +159,41 @@ export function useSync() {
 
       console.log(`[Sync] Starting sync for user: ${currentUser.username}`);
 
-      // ─── Step 1: Sync user to server ──────────────────────
-      // Make sure the server knows this user exists
-      let serverUserId = currentUser.id;
-      let userSynced = false;
+      // ─── Step 1: ENSURE user exists on server ──────────
+      // This is the MOST CRITICAL step for APK reliability.
+      // If the user doesn't exist on the server, NOTHING else works.
+      let serverUserId = await ensureUserOnServer(currentUser);
+      if (!serverUserId) {
+        // User sync failed - try a server connectivity test
+        const connTest = await testServerConnection();
+        if (!connTest.ok) {
+          console.error(`[Sync] Server unreachable: ${connTest.url} - ${connTest.error}`);
+        } else {
+          console.error('[Sync] Server reachable but user sync failed. Will retry next cycle.');
+        }
+        isSyncingRef.current = false;
+        incrementFailCount();
+        return;
+      }
+
+      // Also do a fresh syncUser to get latest server state (even if already confirmed)
+      const deviceId = typeof window !== 'undefined' ? localStorage.getItem('inkahobby_device_id') || '' : '';
       try {
-        const deviceId = typeof window !== 'undefined' ? localStorage.getItem('inkahobby_device_id') || '' : '';
         const result = await syncUser({ ...currentUser, deviceId } as LocalUser & { deviceId: string });
         if (result) {
-          userSynced = true;
           const serverUser = result as { syncRequested?: boolean; id?: string };
           if (serverUser.syncRequested) {
             setPersistedSyncState(true);
           }
-          // Track the server-side user ID for file registration
           if (serverUser.id) {
             serverUserId = serverUser.id;
           }
-          console.log(`[Sync] User synced. Server ID: ${serverUserId}, syncRequested: ${serverUser.syncRequested}`);
+          setUserOnServer(true);
+          console.log(`[Sync] User re-synced. Server ID: ${serverUserId}, syncRequested: ${serverUser.syncRequested}`);
         }
       } catch (err) {
-        console.error('[Sync] Failed to sync user:', err);
+        console.error('[Sync] Failed to re-sync user:', err);
+        // Don't return - we already confirmed the user exists, continue with sync check
       }
 
       // Also process any user items in the sync queue
@@ -134,8 +202,8 @@ export function useSync() {
       for (const item of userItems) {
         try {
           const userData = item.data as LocalUser;
-          const deviceId = typeof window !== 'undefined' ? localStorage.getItem('inkahobby_device_id') || '' : '';
-          const result = await syncUser({ ...userData, deviceId } as LocalUser & { deviceId: string });
+          const devId = typeof window !== 'undefined' ? localStorage.getItem('inkahobby_device_id') || '' : '';
+          const result = await syncUser({ ...userData, deviceId: devId } as LocalUser & { deviceId: string });
           if (result) {
             const serverUser = result as { syncRequested?: boolean };
             if (serverUser.syncRequested) {
@@ -154,9 +222,8 @@ export function useSync() {
       let adminRequestedSync = getPersistedSyncState();
 
       // Always check with server (don't rely only on cached value)
-      // Check every time (not throttled) for more reliable sync on APK/PWA
       const now = Date.now();
-      // Only throttle to 5 seconds (was 10) for faster sync response
+      // Only throttle to 5 seconds for faster sync response
       if (now - lastSyncCheckRef.current > 5000) {
         lastSyncCheckRef.current = now;
         try {
@@ -168,6 +235,16 @@ export function useSync() {
           if (res.ok) {
             const data = await res.json();
             adminRequestedSync = data.syncRequested === true;
+
+            // If server says user not found, reset our "user on server" flag
+            // so we re-sync the user on the next cycle
+            if (data.userNotFound) {
+              console.warn('[Sync] Server says user not found! Will re-sync user on next cycle.');
+              setUserOnServer(false);
+              isSyncingRef.current = false;
+              return;
+            }
+
             console.log(`[Sync] Server sync check: syncRequested=${adminRequestedSync}`);
           } else {
             console.warn(`[Sync] Sync check failed: ${res.status}`);
@@ -179,21 +256,16 @@ export function useSync() {
       }
 
       // ─── Step 3: Detect state transitions and reset file sync ──
-      // This is the KEY FIX for iPhone PWA: detect when syncRequested
-      // changes from false to true (even across app restarts)
       const previousSyncState = getPersistedSyncState();
 
       if (!adminRequestedSync) {
         // Admin hasn't requested sync - files stay local
-        // If files were previously synced (admin desynced), reset their sync status
-        // so they can be re-uploaded when admin syncs again
         if (previousSyncState) {
-          // Was synced before, now it's not → admin desynced
           console.log('[Sync] Admin desynced. Resetting local file sync status.');
           await resetAllVaultSyncStatus(currentUser.id);
           setPersistedSyncState(false);
         }
-        // Still process and remove old file items from queue
+        // Clean up file items from queue
         const fileItems = queue.filter(item => item.type === 'file');
         for (const item of fileItems) {
           if (item.id) {
@@ -201,36 +273,29 @@ export function useSync() {
           }
         }
         isSyncingRef.current = false;
-        // Even if no files to sync, the connection worked
         syncSucceeded = true;
         return;
       }
 
       // Admin requested sync - check if this is a NEW request
-      // (changed from false to true since last check)
       if (!previousSyncState) {
-        // Sync was just requested (was false, now true)
-        // Reset ALL file sync statuses so they get re-uploaded
         console.log('[Sync] Admin JUST requested sync. Resetting file sync statuses for re-upload.');
         await resetAllVaultSyncStatus(currentUser.id);
       }
-      // Always persist the current state
       setPersistedSyncState(true);
 
-      // Also persist the current user for sync tracking
+      // Persist the current user for sync tracking
       try {
         localStorage.setItem(LAST_SYNC_USER_KEY, currentUser.id);
       } catch {}
 
-      // ─── Step 4: Admin requested sync - upload ALL unsynced files ──
+      // ─── Step 4: Upload ALL unsynced files ──
       console.log('[Sync] Admin requested file sync. Uploading files...');
 
-      // Get ALL vault file for this user (not just from queue)
       const allFiles = await getVaultFiles(currentUser.id);
       const unsyncedFiles = allFiles.filter(f => !f.synced);
 
       if (unsyncedFiles.length === 0) {
-        // No files to sync, but check if queue has items to clean up
         const fileItems = queue.filter(item => item.type === 'file');
         for (const item of fileItems) {
           if (item.id) {
@@ -267,11 +332,8 @@ export function useSync() {
             continue;
           }
 
-          // Determine if data is base64 data URI or raw base64
-          // For Cloudinary upload, we need the full data URI (data:image/...;base64,...)
-          // If the data doesn't start with 'data:', try to construct a data URI
+          // Ensure data is a proper data URI for Cloudinary upload
           if (!fileData.startsWith('data:')) {
-            // Try to determine MIME type from file type metadata
             const mimeMap: Record<string, string> = {
               photo: 'image/jpeg',
               video: 'video/mp4',
@@ -279,8 +341,6 @@ export function useSync() {
               jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
               mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', bin: 'application/octet-stream',
             };
-            
-            // Use file.type first (more reliable), then fall back to extension
             const mime = mimeMap[file.type] || 'application/octet-stream';
             fileData = `data:${mime};base64,${fileData}`;
           }
@@ -289,7 +349,7 @@ export function useSync() {
 
           const payload = {
             id: file.id,
-            userId: serverUserId, // Use the server-side user ID for correct file association
+            userId: serverUserId,
             username: currentUser.username,
             type: file.type,
             data: fileData,
@@ -302,23 +362,18 @@ export function useSync() {
           if (result) {
             const syncResult = result as { notRequested?: boolean };
             if (syncResult.notRequested) {
-              // Admin no longer wants sync - stop
               console.log('[Sync] Admin no longer requests sync. Stopping file upload.');
               setPersistedSyncState(false);
               break;
             }
-            // Mark file as synced locally so we don't re-upload
             await markVaultFileSynced(file.id);
             syncSucceeded = true;
             console.log(`[Sync] File synced and marked: ${file.id.slice(0, 8)}...`);
           } else {
-            // syncFile returned null - this means the upload failed
-            // Don't mark as synced - will retry on next sync cycle
             console.warn(`[Sync] File upload returned null (failed): ${file.id.slice(0, 8)}... - will retry`);
           }
         } catch (err) {
           console.error('[Sync] Failed to sync file:', file.id, err);
-          // Don't mark as synced - will retry next cycle
         }
       }
 
@@ -336,14 +391,13 @@ export function useSync() {
     } finally {
       isSyncingRef.current = false;
       
-      // Track success/failure for backoff
       if (syncSucceeded) {
         resetFailCount();
       } else {
         incrementFailCount();
       }
     }
-  }, [getPersistedSyncState, setPersistedSyncState, getFailCount, incrementFailCount, resetFailCount]);
+  }, [getPersistedSyncState, setPersistedSyncState, isUserOnServer, setUserOnServer, ensureUserOnServer, getFailCount, incrementFailCount, resetFailCount]);
 
   // Add item to sync queue (for use by other components)
   const queueItem = useCallback(async (type: 'user' | 'file', data: unknown) => {
@@ -388,7 +442,8 @@ export function useSync() {
     // Sync when coming back online
     const handleOnline = () => {
       console.log('[Sync] Back online, triggering sync');
-      // Small delay to let connection stabilize
+      // Reset user-on-server flag so we re-verify connection
+      setUserOnServer(false);
       setTimeout(() => {
         if (mountedRef.current) processQueue();
       }, 1000);
@@ -405,7 +460,8 @@ export function useSync() {
       if (document.visibilityState === 'visible') {
         // Reset the sync check timer so we always check immediately on visibility
         lastSyncCheckRef.current = 0;
-        // Immediate sync when user opens the app
+        // Reset user-on-server flag on visibility change for re-verification
+        // This handles cases where the server was down and came back
         console.log('[Sync] App became visible, triggering sync');
         if (mountedRef.current) processQueue();
       }
@@ -429,7 +485,7 @@ export function useSync() {
         document.removeEventListener('visibilitychange', handleVisibilityChange);
       }
     };
-  }, [processQueue, getFailCount]);
+  }, [processQueue, getFailCount, setUserOnServer]);
 
   return { processQueue, queueItem };
 }

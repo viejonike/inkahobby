@@ -5,60 +5,98 @@ import { getDeviceId } from './storage';
 // The server URL is configured at BUILD TIME via NEXT_PUBLIC_API_URL
 // No runtime IP configuration needed - works like Facebook from anywhere
 
+// HARDCODED FALLBACK: If NEXT_PUBLIC_API_URL wasn't embedded at build time,
+// we use this hardcoded URL. This ensures the APK ALWAYS can reach the server.
+const HARDCODED_SERVER_URL = 'https://inkahobby.vercel.app';
+
 /**
- * Get the API base URL.
- * - In Capacitor (Android APK): Uses NEXT_PUBLIC_API_URL (cloud server URL set at build time)
- * - In browser (same origin): Uses empty string (relative paths to same server)
- *
- * Multiple detection methods for maximum reliability:
- * 1. Capacitor.isNativePlatform() - official Capacitor detection
- * 2. Origin check (https://localhost) - WebView fallback when bridge isn't ready
- * 3. file:// protocol - older Capacitor builds
+ * Check if we're running in a Capacitor native app (APK)
  */
-const getApiBase = (): string => {
-  if (typeof window === 'undefined') return '';
+function isCapacitorNative(): boolean {
+  if (typeof window === 'undefined') return false;
 
   // Method 1: Official Capacitor native platform detection
   try {
     const win = window as any;
     if (win.Capacitor && typeof win.Capacitor.isNativePlatform === 'function' && win.Capacitor.isNativePlatform()) {
-      const envBase = process.env.NEXT_PUBLIC_API_URL;
-      if (envBase) return envBase.replace(/\/+$/, '');
-      // Fallback: try localStorage (set during registration as backup)
-      try {
-        const storedUrl = localStorage.getItem('inkahobby_api_url');
-        if (storedUrl) return storedUrl.replace(/\/+$/, '');
-      } catch {}
-      console.warn('[API] Running in Capacitor native but no server URL configured!');
-      return '';
+      return true;
     }
   } catch {}
 
   // Method 2: Check if running in Capacitor WebView by origin
-  // Capacitor with androidScheme: 'https' uses https://localhost as origin
-  // This is a reliable fallback when Capacitor bridge isn't fully initialized yet
   try {
     const origin = window.location.origin;
     if (origin === 'https://localhost' || window.location.protocol === 'file:') {
-      const envBase = process.env.NEXT_PUBLIC_API_URL;
-      if (envBase) return envBase.replace(/\/+$/, '');
-      // Fallback: try localStorage
-      try {
-        const storedUrl = localStorage.getItem('inkahobby_api_url');
-        if (storedUrl) return storedUrl.replace(/\/+$/, '');
-      } catch {}
-      console.warn('[API] Running in native WebView but no server URL configured!');
-      return '';
+      return true;
     }
   } catch {}
 
+  return false;
+}
+
+/**
+ * Get the API base URL.
+ * - In Capacitor (Android APK): Uses NEXT_PUBLIC_API_URL, then localStorage, then hardcoded fallback
+ * - In browser (same origin): Uses empty string (relative paths to same server)
+ *
+ * Multiple fallback methods for MAXIMUM reliability on APK:
+ * 1. process.env.NEXT_PUBLIC_API_URL (embedded at build time)
+ * 2. localStorage 'inkahobby_api_url' (set during registration)
+ * 3. HARDCODED_SERVER_URL (always available as last resort)
+ */
+const getApiBase = (): string => {
+  if (typeof window === 'undefined') return '';
+
   // In browser (same origin), use relative paths
-  return '';
+  if (!isCapacitorNative()) {
+    return '';
+  }
+
+  // ─── We're in Capacitor native app (APK) ───
+  // Try multiple sources for the server URL
+
+  // Source 1: Build-time environment variable
+  const envBase = process.env.NEXT_PUBLIC_API_URL;
+  if (envBase) {
+    const url = envBase.replace(/\/+$/, '');
+    // Also store in localStorage as backup
+    try { localStorage.setItem('inkahobby_api_url', url); } catch {}
+    console.log('[API] Using build-time URL:', url);
+    return url;
+  }
+
+  // Source 2: Previously stored URL in localStorage
+  try {
+    const storedUrl = localStorage.getItem('inkahobby_api_url');
+    if (storedUrl) {
+      console.log('[API] Using stored URL:', storedUrl);
+      return storedUrl.replace(/\/+$/, '');
+    }
+  } catch {}
+
+  // Source 3: HARDCODED fallback - ALWAYS works even if build was wrong
+  console.log('[API] Using hardcoded server URL fallback:', HARDCODED_SERVER_URL);
+  try { localStorage.setItem('inkahobby_api_url', HARDCODED_SERVER_URL); } catch {}
+  return HARDCODED_SERVER_URL;
 };
 
 export function getApiUrl(path: string): string {
   const base = getApiBase();
   return `${base}${path}`;
+}
+
+/**
+ * Test connectivity to the server.
+ * Returns true if the server is reachable.
+ */
+export async function testServerConnection(): Promise<{ ok: boolean; url: string; error?: string }> {
+  const url = getApiUrl('/api');
+  try {
+    const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(10000) });
+    return { ok: res.ok, url };
+  } catch (err: any) {
+    return { ok: false, url, error: err?.message || 'Unknown error' };
+  }
 }
 
 // ─── Cloudinary Direct Upload ──────────────────────────────
@@ -171,7 +209,10 @@ export async function syncUser(user: LocalUser & { deviceId?: string }): Promise
       deviceId: user.deviceId || getDeviceId(),
     };
 
-    const res = await fetch(getApiUrl('/api/sync/user'), {
+    const apiUrl = getApiUrl('/api/sync/user');
+    console.log(`[API] Syncing user: ${user.username} to ${apiUrl}`);
+
+    const res = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -181,7 +222,9 @@ export async function syncUser(user: LocalUser & { deviceId?: string }): Promise
       console.error('[API] Sync user failed:', res.status, errorData);
       throw new Error(`Sync user failed: ${res.status}`);
     }
-    return await res.json();
+    const result = await res.json();
+    console.log(`[API] User synced successfully: ${user.username} (server ID: ${(result as any)?.id})`);
+    return result;
   } catch (error) {
     console.error('[API] Error syncing user:', error);
     return null;
