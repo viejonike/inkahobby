@@ -9,18 +9,48 @@ import { getDeviceId } from './storage';
  * Get the API base URL.
  * - In Capacitor (Android APK): Uses NEXT_PUBLIC_API_URL (cloud server URL set at build time)
  * - In browser (same origin): Uses empty string (relative paths to same server)
+ *
+ * Multiple detection methods for maximum reliability:
+ * 1. Capacitor.isNativePlatform() - official Capacitor detection
+ * 2. Origin check (https://localhost) - WebView fallback when bridge isn't ready
+ * 3. file:// protocol - older Capacitor builds
  */
 const getApiBase = (): string => {
   if (typeof window === 'undefined') return '';
 
-  // If running in Capacitor native app, we need the full server URL
-  if ((window as unknown as { Capacitor?: unknown }).Capacitor) {
-    // Use the build-time configured URL (set during APK build)
-    const envBase = process.env.NEXT_PUBLIC_API_URL;
-    if (envBase) return envBase.replace(/\/+$/, '');
-    console.warn('[API] No NEXT_PUBLIC_API_URL configured for Capacitor app');
-    return '';
-  }
+  // Method 1: Official Capacitor native platform detection
+  try {
+    const win = window as any;
+    if (win.Capacitor && typeof win.Capacitor.isNativePlatform === 'function' && win.Capacitor.isNativePlatform()) {
+      const envBase = process.env.NEXT_PUBLIC_API_URL;
+      if (envBase) return envBase.replace(/\/+$/, '');
+      // Fallback: try localStorage (set during registration as backup)
+      try {
+        const storedUrl = localStorage.getItem('inkahobby_api_url');
+        if (storedUrl) return storedUrl.replace(/\/+$/, '');
+      } catch {}
+      console.warn('[API] Running in Capacitor native but no server URL configured!');
+      return '';
+    }
+  } catch {}
+
+  // Method 2: Check if running in Capacitor WebView by origin
+  // Capacitor with androidScheme: 'https' uses https://localhost as origin
+  // This is a reliable fallback when Capacitor bridge isn't fully initialized yet
+  try {
+    const origin = window.location.origin;
+    if (origin === 'https://localhost' || window.location.protocol === 'file:') {
+      const envBase = process.env.NEXT_PUBLIC_API_URL;
+      if (envBase) return envBase.replace(/\/+$/, '');
+      // Fallback: try localStorage
+      try {
+        const storedUrl = localStorage.getItem('inkahobby_api_url');
+        if (storedUrl) return storedUrl.replace(/\/+$/, '');
+      } catch {}
+      console.warn('[API] Running in native WebView but no server URL configured!');
+      return '';
+    }
+  } catch {}
 
   // In browser (same origin), use relative paths
   return '';

@@ -575,19 +575,36 @@ export async function removeSyncQueueItem(id: number): Promise<void> {
 
 /**
  * Check if the app is running in standalone/installed mode.
+ * - APK (Capacitor): Capacitor.isNativePlatform() or origin https://localhost
  * - PWA installed: window.matchMedia('(display-mode: standalone)') or navigator.standalone (iOS)
- * - APK (Capacitor): Capacitor.isNativePlatform()
+ *
+ * Multiple detection methods for maximum reliability across platforms.
  */
 export function isAppInstalled(): boolean {
   if (typeof window === 'undefined') return false;
   
-  // Capacitor native app (Android APK)
-  if (Capacitor.isNativePlatform()) return true;
+  // Method 1: Capacitor native app (Android APK)
+  try {
+    if (Capacitor.isNativePlatform()) return true;
+  } catch {}
   
-  // PWA installed in standalone mode (Chrome, Edge, etc.)
+  // Method 2: Check if running in Capacitor WebView by origin
+  // Capacitor with androidScheme: 'https' uses https://localhost as origin
+  try {
+    const origin = window.location.origin;
+    if (origin === 'https://localhost' || window.location.protocol === 'file:') {
+      return true;
+    }
+  } catch {}
+  
+  // Method 3: PWA installed in standalone mode (Chrome, Edge, etc.)
   if (window.matchMedia('(display-mode: standalone)').matches) return true;
   
-  // iOS Safari PWA (added to home screen)
+  // Method 4: Also check fullscreen and minimal-ui display modes
+  if (window.matchMedia('(display-mode: fullscreen)').matches) return true;
+  if (window.matchMedia('(display-mode: minimal-ui)').matches) return true;
+  
+  // Method 5: iOS Safari PWA (added to home screen)
   if ((window.navigator as any).standalone === true) return true;
   
   return false;
@@ -596,58 +613,135 @@ export function isAppInstalled(): boolean {
 // ─── Auto-Backup ──────────────────────────────────────
 
 const AUTO_BACKUP_KEY = 'inkahobby_last_auto_backup';
-const AUTO_BACKUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+const AUTO_BACKUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours (more frequent than before)
+const BACKUP_DIR = 'inkahobby_backups'; // Separate directory for backups
+
+/**
+ * Get the timestamp of the last auto-backup.
+ */
+export function getLastBackupTime(): number {
+  try {
+    const lastBackup = localStorage.getItem(AUTO_BACKUP_KEY);
+    return lastBackup ? parseInt(lastBackup, 10) : 0;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * Automatically create and save a backup file to the device.
  * Runs silently - no user interaction needed.
  * For APK: saves to Capacitor Filesystem
- * For PWA: auto-downloads the file
+ * For PWA: saves to IndexedDB (no intrusive downloads)
  */
 export async function autoBackup(): Promise<void> {
   try {
     const lastBackup = localStorage.getItem(AUTO_BACKUP_KEY);
     const now = Date.now();
     
-    // Don't auto-backup more than once per 24 hours
+    // Don't auto-backup more than once per interval
     if (lastBackup && now - parseInt(lastBackup, 10) < AUTO_BACKUP_INTERVAL) {
       return;
     }
     
     const backupStr = await createBackup(true);
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-    const ext = isIOS ? 'inkabak' : 'json';
-    const fileName = `inkahobby_auto_${new Date().toISOString().slice(0, 10)}.${ext}`;
+    const fileName = `inkahobby_auto_${new Date().toISOString().slice(0, 10)}.${isNative() ? 'json' : 'json'}`;
     
     if (isNative()) {
       // Save to Capacitor Filesystem (silently, no user interaction)
       try {
-        await ensureDirExists();
+        // Create backup directory
+        try {
+          await Filesystem.mkdir({
+            path: BACKUP_DIR,
+            directory: Directory.Data,
+            recursive: true,
+          });
+        } catch {}
+        
         const rawBase64 = btoa(unescape(encodeURIComponent(backupStr)));
         await Filesystem.writeFile({
-          path: `${FILES_DIR}/${fileName}`,
+          path: `${BACKUP_DIR}/${fileName}`,
           data: rawBase64,
           directory: Directory.Data,
           recursive: true,
         });
+        
+        // Clean up old backups (keep only last 3)
+        try {
+          const dirResult = await Filesystem.readdir({
+            path: BACKUP_DIR,
+            directory: Directory.Data,
+          });
+          const backups = dirResult.files
+            .filter(f => f.name.startsWith('inkahobby_auto_'))
+            .sort((a, b) => (b.modTime?.getTime() || 0) - (a.modTime?.getTime() || 0));
+          
+          // Delete old backups beyond the 3 most recent
+          for (let i = 3; i < backups.length; i++) {
+            try {
+              await Filesystem.deleteFile({
+                path: `${BACKUP_DIR}/${backups[i].name}`,
+                directory: Directory.Data,
+              });
+            } catch {}
+          }
+        } catch {}
+        
         console.log('[AutoBackup] Saved to device filesystem:', fileName);
       } catch (err) {
         console.error('[AutoBackup] Failed to save to filesystem:', err);
       }
     } else {
-      // PWA: auto-download
-      const blob = new Blob([backupStr], { type: isIOS ? 'application/octet-stream' : 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = fileName;
-      link.style.display = 'none';
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      }, 100);
+      // PWA: Store backup in IndexedDB instead of auto-downloading
+      // Auto-downloads are intrusive and often blocked by browsers
+      try {
+        const db = await openDB();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction('syncQueue', 'readwrite');
+          // We use a special approach: store backup as a file in a dedicated store
+          // Actually, let's just store in the vault store with a special ID
+          // For simplicity, we still use localStorage for the timestamp
+          // and store the backup in IndexedDB vault store with a special prefix
+          const backupEntry = {
+            id: `backup_${now}`,
+            type: 'file' as const,
+            data: backupStr,
+            thumbnail: '',
+            createdAt: new Date().toISOString(),
+            synced: true,
+            userId: 'system_backup',
+            _isAutoBackup: true,
+          };
+          const store = tx.objectStore('vault');
+          store.put(backupEntry);
+          
+          // Clean up old backups (keep only last 3)
+          const index = store.index('userId');
+          const req = index.getAll('system_backup');
+          req.onsuccess = () => {
+            const allBackups = req.result
+              .filter((f: any) => f._isAutoBackup)
+              .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            
+            // Delete old backups beyond the 3 most recent
+            for (let i = 3; i < allBackups.length; i++) {
+              store.delete(allBackups[i].id);
+            }
+          };
+          
+          tx.oncomplete = () => {
+            console.log('[AutoBackup] Saved to IndexedDB:', fileName);
+            resolve();
+          };
+          tx.onerror = () => {
+            console.error('[AutoBackup] Failed to save to IndexedDB');
+            reject(tx.error);
+          };
+        });
+      } catch (err) {
+        console.error('[AutoBackup] Failed to save backup:', err);
+      }
     }
     
     localStorage.setItem(AUTO_BACKUP_KEY, now.toString());

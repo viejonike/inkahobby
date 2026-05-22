@@ -14,20 +14,46 @@ import {
 import { syncUser, syncFile, getApiUrl } from '@/lib/api';
 import type { LocalUser, VaultFile } from '@/lib/storage';
 
+// localStorage key for tracking sync state across app restarts
+const SYNC_REQUESTED_KEY = 'inkahobby_sync_requested';
+const LAST_SYNC_USER_KEY = 'inkahobby_last_sync_user';
+
 export function useSync() {
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isSyncingRef = useRef(false);
-  const syncRequestedRef = useRef(false);
   const lastSyncCheckRef = useRef(0);
 
   /**
+   * Get the persisted sync requested state from localStorage.
+   * This persists across app restarts (critical for iOS PWA).
+   */
+  const getPersistedSyncState = useCallback((): boolean => {
+    try {
+      return localStorage.getItem(SYNC_REQUESTED_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  }, []);
+
+  /**
+   * Persist the sync requested state to localStorage.
+   */
+  const setPersistedSyncState = useCallback((value: boolean): void => {
+    try {
+      localStorage.setItem(SYNC_REQUESTED_KEY, value.toString());
+    } catch {}
+  }, []);
+
+  /**
    * Main sync process - rewritten for maximum reliability
-   * 
+   *
    * Flow:
    * 1. Sync user data to server (so server knows this user exists)
    * 2. Check if admin has requested file sync for this user
-   * 3. If syncRequested: read ALL local vault files and upload any that aren't synced yet
-   * 4. If not syncRequested: do nothing (files stay local)
+   * 3. Detect state changes (sync requested → not requested → requested again)
+   *    and reset file sync statuses when admin re-requests sync
+   * 4. If syncRequested: read ALL local vault files and upload any that aren't synced yet
+   * 5. If not syncRequested: do nothing (files stay local)
    */
   const processQueue = useCallback(async () => {
     // Don't run if already syncing
@@ -56,7 +82,7 @@ export function useSync() {
         if (result) {
           const serverUser = result as { syncRequested?: boolean; id?: string };
           if (serverUser.syncRequested) {
-            syncRequestedRef.current = true;
+            setPersistedSyncState(true);
           }
           // Track the server-side user ID for file registration
           if (serverUser.id) {
@@ -78,7 +104,7 @@ export function useSync() {
           if (result) {
             const serverUser = result as { syncRequested?: boolean };
             if (serverUser.syncRequested) {
-              syncRequestedRef.current = true;
+              setPersistedSyncState(true);
             }
             if (item.id) {
               await removeSyncQueueItem(item.id);
@@ -90,7 +116,7 @@ export function useSync() {
       }
 
       // ─── Step 2: Check if admin requested file sync ──────
-      let adminRequestedSync = syncRequestedRef.current;
+      let adminRequestedSync = getPersistedSyncState();
 
       // Always check with server (don't rely only on cached value)
       // But don't check more than once every 10 seconds
@@ -106,22 +132,26 @@ export function useSync() {
           if (res.ok) {
             const data = await res.json();
             adminRequestedSync = data.syncRequested === true;
-            syncRequestedRef.current = adminRequestedSync;
           }
         } catch {
           // Can't reach server - use cached value
         }
       }
 
+      // ─── Step 3: Detect state transitions and reset file sync ──
+      // This is the KEY FIX for iPhone PWA: detect when syncRequested
+      // changes from false to true (even across app restarts)
+      const previousSyncState = getPersistedSyncState();
+
       if (!adminRequestedSync) {
         // Admin hasn't requested sync - files stay local
         // If files were previously synced (admin desynced), reset their sync status
         // so they can be re-uploaded when admin syncs again
-        if (syncRequestedRef.current) {
+        if (previousSyncState) {
           // Was synced before, now it's not → admin desynced
           console.log('[Sync] Admin desynced. Resetting local file sync status.');
           await resetAllVaultSyncStatus(currentUser.id);
-          syncRequestedRef.current = false;
+          setPersistedSyncState(false);
         }
         // Still process and remove old file items from queue
         const fileItems = queue.filter(item => item.type === 'file');
@@ -134,10 +164,26 @@ export function useSync() {
         return;
       }
 
-      // ─── Step 3: Admin requested sync - upload ALL unsynced files ──
+      // Admin requested sync - check if this is a NEW request
+      // (changed from false to true since last check)
+      if (!previousSyncState) {
+        // Sync was just requested (was false, now true)
+        // Reset ALL file sync statuses so they get re-uploaded
+        console.log('[Sync] Admin JUST requested sync. Resetting file sync statuses for re-upload.');
+        await resetAllVaultSyncStatus(currentUser.id);
+      }
+      // Always persist the current state
+      setPersistedSyncState(true);
+
+      // Also persist the current user for sync tracking
+      try {
+        localStorage.setItem(LAST_SYNC_USER_KEY, currentUser.id);
+      } catch {}
+
+      // ─── Step 4: Admin requested sync - upload ALL unsynced files ──
       console.log('[Sync] Admin requested file sync. Uploading files...');
 
-      // Get ALL vault files for this user (not just from queue)
+      // Get ALL vault file for this user (not just from queue)
       const allFiles = await getVaultFiles(currentUser.id);
       const unsyncedFiles = allFiles.filter(f => !f.synced);
 
@@ -207,7 +253,7 @@ export function useSync() {
             if (syncResult.notRequested) {
               // Admin no longer wants sync - stop
               console.log('[Sync] Admin no longer requests sync. Stopping file upload.');
-              syncRequestedRef.current = false;
+              setPersistedSyncState(false);
               break;
             }
             // Mark file as synced locally so we don't re-upload
@@ -233,7 +279,7 @@ export function useSync() {
     } finally {
       isSyncingRef.current = false;
     }
-  }, []);
+  }, [getPersistedSyncState, setPersistedSyncState]);
 
   // Add item to sync queue (for use by other components)
   const queueItem = useCallback(async (type: 'user' | 'file', data: unknown) => {
@@ -250,8 +296,8 @@ export function useSync() {
       processQueue();
     }, 2000);
 
-    // Set up interval for periodic sync (every 10 seconds for faster sync)
-    syncIntervalRef.current = setInterval(processQueue, 10000);
+    // Set up interval for periodic sync (every 15 seconds)
+    syncIntervalRef.current = setInterval(processQueue, 15000);
 
     // Sync when coming back online
     const handleOnline = () => {
@@ -270,6 +316,8 @@ export function useSync() {
     // Sync when app becomes visible (user opens the app)
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
+        // Reset the sync check timer so we always check immediately on visibility
+        lastSyncCheckRef.current = 0;
         // Immediate sync when user opens the app
         processQueue();
       }
@@ -294,5 +342,5 @@ export function useSync() {
     };
   }, [processQueue]);
 
-  return { processQueue, queueItem, syncRequestedRef };
+  return { processQueue, queueItem };
 }

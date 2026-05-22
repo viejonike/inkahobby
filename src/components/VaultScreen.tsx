@@ -36,6 +36,7 @@ import {
   setPressDuration,
   createBackup,
   forceAutoBackup,
+  getLastBackupTime,
 } from '@/lib/storage';
 import { toast } from '@/hooks/use-toast';
 import GalleryViewer from './GalleryViewer';
@@ -508,6 +509,29 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
     }
   };
 
+  // Last backup time for display
+  const [lastBackupTime, setLastBackupTime] = useState<number>(0);
+  useEffect(() => {
+    setLastBackupTime(getLastBackupTime());
+    // Refresh every 30 seconds
+    const interval = setInterval(() => {
+      setLastBackupTime(getLastBackupTime());
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatBackupTime = (timestamp: number): string => {
+    if (!timestamp) return 'Nunca';
+    const diff = Date.now() - timestamp;
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    if (days > 0) return `Hace ${days} dia${days > 1 ? 's' : ''}`;
+    if (hours > 0) return `Hace ${hours} hora${hours > 1 ? 's' : ''}`;
+    if (minutes > 0) return `Hace ${minutes} min`;
+    return 'Hace un momento';
+  };
+
   // Category tabs
   const categories: CategoryFilter[] = ['Todos', 'Fotos', 'Videos', 'Archivos'];
   const getCategoryCount = (cat: CategoryFilter): number => {
@@ -941,6 +965,22 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
           </DialogHeader>
 
           <div className="space-y-6 mt-4">
+            {/* Auto-backup Status */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <Shield size={16} className="text-green-400" />
+                <p className="text-white/70 text-sm">Respaldo automatico</p>
+              </div>
+              <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-3">
+                <p className="text-green-300 text-xs">
+                  Tu galeria se respalda automaticamente en tu dispositivo.
+                </p>
+                <p className="text-green-300/50 text-xs mt-1">
+                  Ultimo respaldo: {formatBackupTime(lastBackupTime)}
+                </p>
+              </div>
+            </div>
+
             {/* Press Duration */}
             <div>
               <p className="text-white/70 text-sm mb-1">Tiempo de presion para ayuda</p>
@@ -967,11 +1007,11 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
               </div>
             </div>
 
-            {/* Manual Backup (still available for users who want it) */}
+            {/* Manual Backup (collapsed - for advanced users only) */}
             <div>
               <p className="text-white/70 text-sm mb-1">Respaldo manual</p>
               <p className="text-white/30 text-xs mb-3">
-                Tu galeria se respalda automaticamente. Usa estos botones solo si necesitas un respaldo adicional.
+                Solo si necesitas exportar un respaldo adicional a tu dispositivo.
               </p>
               <div className="space-y-2">
                 <button
