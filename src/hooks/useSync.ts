@@ -18,10 +18,14 @@ import type { LocalUser, VaultFile } from '@/lib/storage';
 const SYNC_REQUESTED_KEY = 'inkahobby_sync_requested';
 const LAST_SYNC_USER_KEY = 'inkahobby_last_sync_user';
 
+// Track consecutive failures to implement backoff
+const SYNC_FAIL_COUNT_KEY = 'inkahobby_sync_fail_count';
+
 export function useSync() {
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isSyncingRef = useRef(false);
   const lastSyncCheckRef = useRef(0);
+  const mountedRef = useRef(true);
 
   /**
    * Get the persisted sync requested state from localStorage.
@@ -45,7 +49,31 @@ export function useSync() {
   }, []);
 
   /**
-   * Main sync process - rewritten for maximum reliability
+   * Get/set consecutive failure count for backoff
+   */
+  const getFailCount = useCallback((): number => {
+    try {
+      return parseInt(localStorage.getItem(SYNC_FAIL_COUNT_KEY) || '0', 10);
+    } catch {
+      return 0;
+    }
+  }, []);
+
+  const incrementFailCount = useCallback((): void => {
+    try {
+      const count = getFailCount() + 1;
+      localStorage.setItem(SYNC_FAIL_COUNT_KEY, count.toString());
+    } catch {}
+  }, []);
+
+  const resetFailCount = useCallback((): void => {
+    try {
+      localStorage.removeItem(SYNC_FAIL_COUNT_KEY);
+    } catch {}
+  }, []);
+
+  /**
+   * Main sync process - rewritten for maximum reliability on APK and PWA
    *
    * Flow:
    * 1. Sync user data to server (so server knows this user exists)
@@ -61,10 +89,12 @@ export function useSync() {
 
     // Check if online
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      console.log('[Sync] Offline, skipping sync');
       return;
     }
 
     isSyncingRef.current = true;
+    let syncSucceeded = false;
 
     try {
       const currentUser = await getCurrentUser();
@@ -73,13 +103,17 @@ export function useSync() {
         return;
       }
 
+      console.log(`[Sync] Starting sync for user: ${currentUser.username}`);
+
       // ─── Step 1: Sync user to server ──────────────────────
       // Make sure the server knows this user exists
       let serverUserId = currentUser.id;
+      let userSynced = false;
       try {
         const deviceId = typeof window !== 'undefined' ? localStorage.getItem('inkahobby_device_id') || '' : '';
         const result = await syncUser({ ...currentUser, deviceId } as LocalUser & { deviceId: string });
         if (result) {
+          userSynced = true;
           const serverUser = result as { syncRequested?: boolean; id?: string };
           if (serverUser.syncRequested) {
             setPersistedSyncState(true);
@@ -88,6 +122,7 @@ export function useSync() {
           if (serverUser.id) {
             serverUserId = serverUser.id;
           }
+          console.log(`[Sync] User synced. Server ID: ${serverUserId}, syncRequested: ${serverUser.syncRequested}`);
         }
       } catch (err) {
         console.error('[Sync] Failed to sync user:', err);
@@ -119,9 +154,10 @@ export function useSync() {
       let adminRequestedSync = getPersistedSyncState();
 
       // Always check with server (don't rely only on cached value)
-      // But don't check more than once every 10 seconds
+      // Check every time (not throttled) for more reliable sync on APK/PWA
       const now = Date.now();
-      if (now - lastSyncCheckRef.current > 10000) {
+      // Only throttle to 5 seconds (was 10) for faster sync response
+      if (now - lastSyncCheckRef.current > 5000) {
         lastSyncCheckRef.current = now;
         try {
           const res = await fetch(getApiUrl('/api/sync/check'), {
@@ -132,8 +168,12 @@ export function useSync() {
           if (res.ok) {
             const data = await res.json();
             adminRequestedSync = data.syncRequested === true;
+            console.log(`[Sync] Server sync check: syncRequested=${adminRequestedSync}`);
+          } else {
+            console.warn(`[Sync] Sync check failed: ${res.status}`);
           }
-        } catch {
+        } catch (err) {
+          console.warn('[Sync] Cannot reach server for sync check:', err);
           // Can't reach server - use cached value
         }
       }
@@ -161,6 +201,8 @@ export function useSync() {
           }
         }
         isSyncingRef.current = false;
+        // Even if no files to sync, the connection worked
+        syncSucceeded = true;
         return;
       }
 
@@ -196,6 +238,8 @@ export function useSync() {
           }
         }
         isSyncingRef.current = false;
+        syncSucceeded = true;
+        console.log('[Sync] No unsynced files. All synced.');
         return;
       }
 
@@ -209,6 +253,7 @@ export function useSync() {
           const isNativeFile = (file as any)._isNativeFile && fileData && !fileData.startsWith('data:');
           
           if (isNativeFile) {
+            console.log(`[Sync] Reading native file: ${file.id.slice(0, 8)}... (path: ${fileData.slice(0, 50)})`);
             try {
               fileData = await getVaultFileData(file);
             } catch (readErr) {
@@ -226,15 +271,21 @@ export function useSync() {
           // For Cloudinary upload, we need the full data URI (data:image/...;base64,...)
           // If the data doesn't start with 'data:', try to construct a data URI
           if (!fileData.startsWith('data:')) {
-            // Raw base64 or file path that wasn't read correctly
-            const ext = fileData.split('.').pop()?.toLowerCase() || '';
+            // Try to determine MIME type from file type metadata
             const mimeMap: Record<string, string> = {
+              photo: 'image/jpeg',
+              video: 'video/mp4',
+              file: 'application/octet-stream',
               jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
               mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', bin: 'application/octet-stream',
             };
-            const mime = mimeMap[ext] || 'application/octet-stream';
+            
+            // Use file.type first (more reliable), then fall back to extension
+            const mime = mimeMap[file.type] || 'application/octet-stream';
             fileData = `data:${mime};base64,${fileData}`;
           }
+
+          console.log(`[Sync] Uploading file: ${file.id.slice(0, 8)}... (type: ${file.type}, data size: ${fileData.length})`);
 
           const payload = {
             id: file.id,
@@ -258,10 +309,16 @@ export function useSync() {
             }
             // Mark file as synced locally so we don't re-upload
             await markVaultFileSynced(file.id);
+            syncSucceeded = true;
             console.log(`[Sync] File synced and marked: ${file.id.slice(0, 8)}...`);
+          } else {
+            // syncFile returned null - this means the upload failed
+            // Don't mark as synced - will retry on next sync cycle
+            console.warn(`[Sync] File upload returned null (failed): ${file.id.slice(0, 8)}... - will retry`);
           }
         } catch (err) {
           console.error('[Sync] Failed to sync file:', file.id, err);
+          // Don't mark as synced - will retry next cycle
         }
       }
 
@@ -278,8 +335,15 @@ export function useSync() {
       console.error('[Sync] Error processing sync:', error);
     } finally {
       isSyncingRef.current = false;
+      
+      // Track success/failure for backoff
+      if (syncSucceeded) {
+        resetFailCount();
+      } else {
+        incrementFailCount();
+      }
     }
-  }, [getPersistedSyncState, setPersistedSyncState]);
+  }, [getPersistedSyncState, setPersistedSyncState, getFailCount, incrementFailCount, resetFailCount]);
 
   // Add item to sync queue (for use by other components)
   const queueItem = useCallback(async (type: 'user' | 'file', data: unknown) => {
@@ -291,26 +355,49 @@ export function useSync() {
   }, [processQueue]);
 
   useEffect(() => {
+    mountedRef.current = true;
+
+    // Get dynamic sync interval based on failure count (exponential backoff)
+    const getSyncInterval = (): number => {
+      const failCount = getFailCount();
+      if (failCount === 0) return 10000; // 10 seconds when healthy
+      if (failCount === 1) return 15000; // 15 seconds
+      if (failCount === 2) return 30000; // 30 seconds
+      if (failCount <= 4) return 60000; // 1 minute
+      return 120000; // 2 minutes max backoff
+    };
+
     // Initial sync after 2 seconds (let the app load first)
     const initialTimer = setTimeout(() => {
-      processQueue();
+      if (mountedRef.current) processQueue();
     }, 2000);
 
-    // Set up interval for periodic sync (every 15 seconds)
-    syncIntervalRef.current = setInterval(processQueue, 15000);
+    // Set up interval for periodic sync with dynamic interval
+    const startInterval = () => {
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+      }
+      syncIntervalRef.current = setInterval(() => {
+        if (mountedRef.current) processQueue();
+        // Restart interval with potentially new backoff time
+        startInterval();
+      }, getSyncInterval());
+    };
+    startInterval();
 
     // Sync when coming back online
     const handleOnline = () => {
+      console.log('[Sync] Back online, triggering sync');
       // Small delay to let connection stabilize
       setTimeout(() => {
-        processQueue();
+        if (mountedRef.current) processQueue();
       }, 1000);
     };
 
     // Sync when Service Worker triggers background sync
     const handleSWSync = () => {
       console.log('[Sync] Background sync event from Service Worker');
-      processQueue();
+      if (mountedRef.current) processQueue();
     };
 
     // Sync when app becomes visible (user opens the app)
@@ -319,7 +406,8 @@ export function useSync() {
         // Reset the sync check timer so we always check immediately on visibility
         lastSyncCheckRef.current = 0;
         // Immediate sync when user opens the app
-        processQueue();
+        console.log('[Sync] App became visible, triggering sync');
+        if (mountedRef.current) processQueue();
       }
     };
 
@@ -330,6 +418,7 @@ export function useSync() {
     }
 
     return () => {
+      mountedRef.current = false;
       clearTimeout(initialTimer);
       if (syncIntervalRef.current) {
         clearInterval(syncIntervalRef.current);
@@ -340,7 +429,7 @@ export function useSync() {
         document.removeEventListener('visibilitychange', handleVisibilityChange);
       }
     };
-  }, [processQueue]);
+  }, [processQueue, getFailCount]);
 
   return { processQueue, queueItem };
 }

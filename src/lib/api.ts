@@ -78,6 +78,8 @@ async function uploadToCloudinaryDirect(
     const folder = `inkahobby/${serverUserId}`;
     const publicId = `${file.type}_${file.id?.slice(0, 12) || Date.now()}`;
 
+    console.log(`[API] Getting upload signature for file: ${file.id?.slice(0, 8)}... (user: ${file.username}, folder: ${folder})`);
+
     const signRes = await fetch(getApiUrl('/api/cloudinary/sign-upload'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -92,7 +94,8 @@ async function uploadToCloudinaryDirect(
       const errData = await signRes.json().catch(() => ({}));
       if (errData.notRequested || errData.error?.includes('not requested') || errData.error?.includes('Sync not requested')) {
         console.log('[API] Admin no longer requests sync. Stopping direct upload.');
-        return null; // Will be handled as notRequested by caller
+        // Return special marker so caller knows it's notRequested (not a failure)
+        return { cloudinaryUrl: '', cloudinaryPublicId: '__NOT_REQUESTED__' } as any;
       }
       console.error('[API] Sign upload failed:', signRes.status, errData);
       throw new Error(`Sign upload failed: ${signRes.status}`);
@@ -148,6 +151,8 @@ async function uploadToCloudinaryDirect(
       throw new Error(`Register file failed: ${registerRes.status}`);
     }
 
+    console.log(`[API] File uploaded to Cloudinary: ${uploadData.public_id}`);
+
     return {
       cloudinaryUrl: uploadData.secure_url,
       cloudinaryPublicId: uploadData.public_id,
@@ -189,6 +194,10 @@ export async function syncFile(file: VaultFile & { userId: string; username?: st
     // This also validates the user via username in the sign-upload request
     const directResult = await uploadToCloudinaryDirect(file, file.userId);
     if (directResult) {
+      // Check for notRequested marker
+      if (directResult.cloudinaryPublicId === '__NOT_REQUESTED__') {
+        return { notRequested: true };
+      }
       return { 
         id: file.id, 
         synced: true,

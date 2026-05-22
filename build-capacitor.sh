@@ -14,23 +14,50 @@ SERVER_URL="${INKA_SERVER_URL:-https://inkahobby.vercel.app}"
 echo "=== InkaHobby Capacitor Build ==="
 echo "Server URL: $SERVER_URL"
 
-# Step 1: Temporarily move API routes out of the app directory
-echo "[1/8] Temporarily moving API routes..."
-if [ -d "src/app/api" ]; then
-  mv src/app/api src/app_api_backup
-  echo "  API routes moved to src/app_api_backup"
+# CRITICAL: Ensure API routes are in the correct location before build
+# The build script temporarily moves them during static export, but they
+# MUST be in src/app/api/ for Vercel deployment to work
+echo "[0/8] Ensuring API routes are in correct location..."
+if [ ! -d "src/app/api" ] && [ -d "src/app_api_backup" ]; then
+  echo "  WARNING: API routes found in backup but not in src/app/api!"
+  echo "  Restoring API routes to src/app/api/..."
+  cp -r src/app_api_backup src/app/api
+  echo "  API routes restored (backup kept for safety)"
+elif [ -d "src/app/api" ]; then
+  echo "  API routes are in correct location (src/app/api/)"
+else
+  echo "  ERROR: No API routes found! Build will fail."
+  exit 1
 fi
+
+# Step 1: Temporarily move API routes out of the app directory
+echo "[1/8] Temporarily moving API routes for static export..."
+if [ -d "src/app/api" ]; then
+  # Save a backup copy first (don't overwrite existing backup)
+  if [ ! -d "src/app_api_backup" ]; then
+    cp -r src/app/api src/app_api_backup
+    echo "  API routes backed up to src/app_api_backup"
+  fi
+  mv src/app/api src/app_api_temp
+  echo "  API routes moved to src/app_api_temp"
+fi
+
+# Function to restore API routes on exit (even if build fails)
+restore_api_routes() {
+  if [ -d "src/app_api_temp" ]; then
+    mv src/app_api_temp src/app/api
+    echo "  API routes restored to src/app/api/"
+  fi
+}
+trap restore_api_routes EXIT
 
 # Step 2: Build with export mode - use the cloud server URL
 echo "[2/8] Building static export..."
 BUILD_MODE=capacitor NEXT_PUBLIC_API_URL="$SERVER_URL" npx next build
 
-# Step 3: Restore API routes
+# Step 3: Restore API routes (also done by trap on EXIT)
 echo "[3/8] Restoring API routes..."
-if [ -d "src/app_api_backup" ]; then
-  mv src/app_api_backup src/app/api
-  echo "  API routes restored to src/app/api"
-fi
+restore_api_routes
 
 # Step 4: Add Capacitor config to the output
 echo "[4/8] Adding Capacitor files to output..."
@@ -140,6 +167,16 @@ if pgrep -f "next start" > /dev/null; then
   echo "  Server restarted on port 3000"
 else
   echo "  Server not running. Start with: npx next start -p 3000"
+fi
+
+# Final verification: make sure API routes are in place
+echo ""
+echo "=== Final Verification ==="
+if [ -d "src/app/api" ]; then
+  echo "✓ API routes are in src/app/api/ (Vercel deployment will work)"
+else
+  echo "✗ WARNING: API routes NOT in src/app/api/! Vercel deployment will FAIL!"
+  echo "  Run: cp -r src/app_api_backup src/app/api"
 fi
 
 echo ""
