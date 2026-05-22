@@ -25,7 +25,7 @@ import {
   Play,
 } from 'lucide-react';
 import type { LocalUser } from '@/lib/storage';
-import { fetchUsers, fetchFiles } from '@/lib/api';
+import { fetchUsers, fetchFiles, getApiUrl } from '@/lib/api';
 import GalleryViewer from './GalleryViewer';
 
 interface SuperAdminPanelProps {
@@ -149,7 +149,7 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
 
   const handleDeleteUser = async (userId: string) => {
     try {
-      await fetch(`/api/users?id=${userId}`, { method: 'DELETE' });
+      await fetch(getApiUrl(`/api/users?id=${userId}`), { method: 'DELETE' });
       await loadData();
       setConfirmDelete(null);
       if (selectedUserId === userId) {
@@ -164,7 +164,7 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
     try {
       const u = users.find((u) => u.id === userId);
       if (!u) return;
-      await fetch('/api/sync/user', {
+      await fetch(getApiUrl('/api/sync/user'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...u, blocked }),
@@ -179,7 +179,7 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
     try {
       const u = users.find((u) => u.id === userId);
       if (!u) return;
-      await fetch('/api/sync/user', {
+      await fetch(getApiUrl('/api/sync/user'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...u, role: newRole }),
@@ -193,7 +193,7 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
 
   const handleDeleteFile = async (fileId: string) => {
     try {
-      await fetch(`/api/files?id=${fileId}`, { method: 'DELETE' });
+      await fetch(getApiUrl(`/api/files?id=${fileId}`), { method: 'DELETE' });
       await loadData();
     } catch (err) {
       console.error('Error deleting file:', err);

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { corsHeaders } from '@/lib/cors';
 
 export async function GET(request: NextRequest) {
   try {
@@ -18,10 +19,12 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    return NextResponse.json(files);
+    return NextResponse.json(files, {
+      headers: corsHeaders(),
+    });
   } catch (error) {
     console.error('Error fetching files:', error);
-    return NextResponse.json({ error: 'Failed to fetch files' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to fetch files' }, { status: 500, headers: corsHeaders() });
   }
 }
 
@@ -31,13 +34,22 @@ export async function DELETE(request: NextRequest) {
     const fileId = searchParams.get('id');
 
     if (!fileId) {
-      return NextResponse.json({ error: 'File ID is required' }, { status: 400 });
+      return NextResponse.json({ error: 'File ID is required' }, { status: 400, headers: corsHeaders() });
     }
 
     await db.vaultFile.delete({ where: { id: fileId } });
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true }, {
+      headers: corsHeaders(),
+    });
   } catch (error) {
     console.error('Error deleting file:', error);
-    return NextResponse.json({ error: 'Failed to delete file' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to delete file' }, { status: 500, headers: corsHeaders() });
   }
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 200,
+    headers: corsHeaders(),
+  });
 }

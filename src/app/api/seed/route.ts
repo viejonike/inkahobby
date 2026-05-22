@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { createHash } from 'crypto';
+import { corsHeaders } from '@/lib/cors';
 
 function hashPin(pin: string): string {
   return createHash('sha256').update(pin + '_inkahobby_salt_2024').digest('hex');
@@ -60,9 +61,18 @@ export async function POST() {
       results.push('Admin updated with email credentials');
     }
 
-    return NextResponse.json({ message: 'Seed completed', results });
+    return NextResponse.json({ message: 'Seed completed', results }, {
+      headers: corsHeaders(),
+    });
   } catch (error) {
     console.error('Error seeding:', error);
-    return NextResponse.json({ error: 'Failed to seed' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to seed' }, { status: 500, headers: corsHeaders() });
   }
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 200,
+    headers: corsHeaders(),
+  });
 }

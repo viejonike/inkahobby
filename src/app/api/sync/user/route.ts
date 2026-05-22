@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { corsHeaders } from '@/lib/cors';
 
 export async function POST(request: NextRequest) {
   try {
@@ -7,7 +8,7 @@ export async function POST(request: NextRequest) {
     const { id, username, email, pin, role, blocked, createdAt, deviceId } = body;
 
     if (!username || !pin) {
-      return NextResponse.json({ error: 'Username and PIN are required' }, { status: 400 });
+      return NextResponse.json({ error: 'Username and PIN are required' }, { status: 400, headers: corsHeaders() });
     }
 
     // Try to find existing user by username first
@@ -24,7 +25,7 @@ export async function POST(request: NextRequest) {
           ...(blocked !== undefined && { blocked }),
         },
       });
-      return NextResponse.json(user);
+      return NextResponse.json(user, { headers: corsHeaders() });
     }
 
     // Try to find by id (in case username changed but id matches)
@@ -41,7 +42,7 @@ export async function POST(request: NextRequest) {
             ...(blocked !== undefined && { blocked }),
           },
         });
-        return NextResponse.json(user);
+        return NextResponse.json(user, { headers: corsHeaders() });
       }
     }
 
@@ -60,9 +61,16 @@ export async function POST(request: NextRequest) {
     });
 
     console.log(`[Sync] User synced: ${username} (id: ${user.id}, role: ${user.role})`);
-    return NextResponse.json(user);
+    return NextResponse.json(user, { headers: corsHeaders() });
   } catch (error) {
     console.error('[Sync] Error syncing user:', error);
-    return NextResponse.json({ error: 'Failed to sync user' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to sync user' }, { status: 500, headers: corsHeaders() });
   }
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 200,
+    headers: corsHeaders(),
+  });
 }

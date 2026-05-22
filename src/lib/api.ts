@@ -1,84 +1,25 @@
 import type { VaultFile, LocalUser } from './storage';
 import { getDeviceId } from './storage';
 
-// ─── Server URL Configuration ──────────────────────────────
-
-const SERVER_URL_KEY = 'inkahobby_server_url';
-
-/**
- * Get the configured server URL.
- * Priority:
- * 1. localStorage (user-configured from app settings)
- * 2. window.INKA_API_BASE (runtime injection)
- * 3. process.env.NEXT_PUBLIC_API_URL (build time)
- * 4. Auto-detect from current URL (same origin)
- * 5. Default fallback for Capacitor
- */
-export function getServerUrl(): string {
-  if (typeof window === 'undefined') return '';
-
-  // Check localStorage first (user-configured)
-  const stored = localStorage.getItem(SERVER_URL_KEY);
-  if (stored) return stored;
-
-  // Check runtime injection
-  const windowBase = (window as unknown as { INKA_API_BASE?: string }).INKA_API_BASE;
-  if (windowBase) return windowBase;
-
-  // Check env variable (build time)
-  const envBase = process.env.NEXT_PUBLIC_API_URL;
-  if (envBase) return envBase;
-
-  return '';
-}
-
-export function setServerUrl(url: string): void {
-  if (typeof window === 'undefined') return;
-  if (url.trim()) {
-    // Remove trailing slash
-    const cleanUrl = url.trim().replace(/\/+$/, '');
-    localStorage.setItem(SERVER_URL_KEY, cleanUrl);
-  } else {
-    localStorage.removeItem(SERVER_URL_KEY);
-  }
-}
+// ─── API Base URL Configuration ──────────────────────────────
+// The server URL is configured at BUILD TIME via NEXT_PUBLIC_API_URL
+// No runtime IP configuration needed - works like Facebook from anywhere
 
 /**
- * Auto-detect server URL from the current page URL.
- * If running in Capacitor, tries to find the server on the local network.
+ * Get the API base URL.
+ * - In Capacitor (Android APK): Uses NEXT_PUBLIC_API_URL (cloud server URL set at build time)
+ * - In browser (same origin): Uses empty string (relative paths to same server)
  */
-export function autoDetectServerUrl(): string {
-  if (typeof window === 'undefined') return '';
-
-  // If running in browser (not Capacitor), use same origin
-  if (!(window as unknown as { Capacitor?: unknown }).Capacitor) {
-    return window.location.origin;
-  }
-
-  // Running in Capacitor native app
-  // Check if we have a stored URL first
-  const stored = getServerUrl();
-  if (stored) return stored;
-
-  // Check runtime injection
-  const windowBase = (window as unknown as { INKA_API_BASE?: string }).INKA_API_BASE;
-  if (windowBase) return windowBase;
-
-  // Check env variable
-  const envBase = process.env.NEXT_PUBLIC_API_URL;
-  if (envBase) return envBase;
-
-  // Default fallback for Capacitor
-  return 'http://192.168.1.100:3000';
-}
-
-// CRITICAL: API_BASE must work in both browser and Capacitor native app
 const getApiBase = (): string => {
   if (typeof window === 'undefined') return '';
 
   // If running in Capacitor native app, we need the full server URL
   if ((window as unknown as { Capacitor?: unknown }).Capacitor) {
-    return autoDetectServerUrl();
+    // Use the build-time configured URL (set during APK build)
+    const envBase = process.env.NEXT_PUBLIC_API_URL;
+    if (envBase) return envBase.replace(/\/+$/, '');
+    console.warn('[API] No NEXT_PUBLIC_API_URL configured for Capacitor app');
+    return '';
   }
 
   // In browser (same origin), use relative paths
@@ -88,35 +29,6 @@ const getApiBase = (): string => {
 export function getApiUrl(path: string): string {
   const base = getApiBase();
   return `${base}${path}`;
-}
-
-/**
- * Test connection to the server
- */
-export async function testServerConnection(url: string): Promise<{ ok: boolean; message: string }> {
-  try {
-    const cleanUrl = url.trim().replace(/\/+$/, '');
-    const res = await fetch(`${cleanUrl}/api`, {
-      method: 'GET',
-      signal: AbortSignal.timeout(5000), // 5 second timeout
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.message) {
-        return { ok: true, message: 'Conexión exitosa al servidor' };
-      }
-    }
-    return { ok: false, message: `Error: servidor respondió con estado ${res.status}` };
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Error desconocido';
-    if (msg.includes('timeout') || msg.includes('abort')) {
-      return { ok: false, message: 'Tiempo de espera agotado. Verifica la IP y que el servidor esté corriendo.' };
-    }
-    if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-      return { ok: false, message: 'No se pudo conectar. Verifica que estés en la misma red WiFi y la IP sea correcta.' };
-    }
-    return { ok: false, message: `Error de conexión: ${msg}` };
-  }
 }
 
 export async function syncUser(user: LocalUser & { deviceId?: string }): Promise<unknown> {

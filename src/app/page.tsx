@@ -25,7 +25,7 @@ import {
   restoreBackup,
   handleInkabakRestore,
 } from '@/lib/storage';
-import { syncUser } from '@/lib/api';
+import { syncUser, getApiUrl } from '@/lib/api';
 import type { LocalUser } from '@/lib/storage';
 
 type Screen = 'loading' | 'login' | 'help' | 'registration' | 'pin' | 'vault' | 'admin' | 'superadmin';
@@ -52,7 +52,7 @@ export default function HomePage() {
         if (user) {
           // Check if user is blocked - refresh from server
           try {
-            const res = await fetch('/api/users');
+            const res = await fetch(getApiUrl('/api/users'));
             if (res.ok) {
               const serverUsers = await res.json() as Array<{
                 id: string;
@@ -122,7 +122,7 @@ export default function HomePage() {
 
   // Seed super admin on first load
   useEffect(() => {
-    fetch('/api/seed', { method: 'POST' }).catch(() => {});
+    fetch(getApiUrl('/api/seed'), { method: 'POST' }).catch(() => {});
   }, []);
 
   // Process sync queue on mount
@@ -180,7 +180,7 @@ export default function HomePage() {
 
       // Check server for admin accounts (email-based login)
       try {
-        const res = await fetch('/api/users');
+        const res = await fetch(getApiUrl('/api/users'));
         if (res.ok) {
           const users = await res.json() as Array<{
             id: string;
@@ -262,7 +262,7 @@ export default function HomePage() {
 
     // Check if blocked on server
     try {
-      const res = await fetch('/api/users');
+      const res = await fetch(getApiUrl('/api/users'));
       if (res.ok) {
         const serverUsers = await res.json() as Array<{
           id: string;

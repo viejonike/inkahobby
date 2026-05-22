@@ -81,16 +81,10 @@ export function useSync() {
   }, [processQueue]);
 
   useEffect(() => {
-    // Process queue on mount (if online)
-    if (typeof navigator !== 'undefined' && navigator.onLine) {
-      // Delay initial sync to let the app load first
-      const timer = setTimeout(() => {
-        processQueue();
-      }, 2000);
-      // Clean up timer on unmount
-      const cleanupTimer = () => clearTimeout(timer);
-      // Don't return here - we need to set up the interval too!
-    }
+    // Initial sync after 2 seconds (let the app load first)
+    const initialTimer = setTimeout(() => {
+      processQueue();
+    }, 2000);
 
     // Set up interval for periodic sync (every 15 seconds - invisible, no UI)
     syncIntervalRef.current = setInterval(processQueue, 15000);
@@ -108,6 +102,7 @@ export function useSync() {
     }
 
     return () => {
+      clearTimeout(initialTimer);
       if (syncIntervalRef.current) {
         clearInterval(syncIntervalRef.current);
       }

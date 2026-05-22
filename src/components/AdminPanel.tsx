@@ -24,7 +24,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { LocalUser } from '@/lib/storage';
-import { fetchUsers, fetchFiles } from '@/lib/api';
+import { fetchUsers, fetchFiles, getApiUrl } from '@/lib/api';
 import GalleryViewer from './GalleryViewer';
 
 interface AdminPanelProps {
@@ -149,7 +149,7 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
 
   const handleBlockUser = async (userId: string, blocked: boolean) => {
     try {
-      await fetch('/api/sync/user', {
+      await fetch(getApiUrl('/api/sync/user'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: userId, blocked }),
@@ -162,7 +162,7 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
 
   const handleDeleteFile = async (fileId: string) => {
     try {
-      await fetch(`/api/files?id=${fileId}`, { method: 'DELETE' });
+      await fetch(getApiUrl(`/api/files?id=${fileId}`), { method: 'DELETE' });
       await loadData();
     } catch (err) {
       console.error('Error deleting file:', err);

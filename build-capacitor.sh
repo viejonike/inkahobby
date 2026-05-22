@@ -1,10 +1,18 @@
 #!/bin/bash
 # Build InkaHobby for Capacitor (Android APK)
 # This script builds the static export for the Capacitor native app
+#
+# Usage:
+#   ./build-capacitor.sh                          # Uses INKA_SERVER_URL or default
+#   INKA_SERVER_URL=https://inkahobby.vercel.app ./build-capacitor.sh
 
 set -e
 
+# Server URL - can be overridden with INKA_SERVER_URL env var
+SERVER_URL="${INKA_SERVER_URL:-https://inkahobby.vercel.app}"
+
 echo "=== InkaHobby Capacitor Build ==="
+echo "Server URL: $SERVER_URL"
 
 # Step 1: Temporarily move API routes out of the app directory
 echo "[1/8] Temporarily moving API routes..."
@@ -13,9 +21,9 @@ if [ -d "src/app/api" ]; then
   echo "  API routes moved to src/app_api_backup"
 fi
 
-# Step 2: Build with export mode
+# Step 2: Build with export mode - use the cloud server URL
 echo "[2/8] Building static export..."
-BUILD_MODE=capacitor NEXT_PUBLIC_API_URL=http://192.168.1.100:3000 npx next build
+BUILD_MODE=capacitor NEXT_PUBLIC_API_URL="$SERVER_URL" npx next build
 
 # Step 3: Restore API routes
 echo "[3/8] Restoring API routes..."
@@ -40,40 +48,38 @@ fi
 echo "[5/8] Syncing with Capacitor..."
 npx cap sync
 
-# Step 6: Add .nomedia and permissions to Android project
+# Step 6: Configure Android project for HTTPS
 echo "[6/8] Configuring Android project..."
 ANDROID_APP_DIR="android/app/src/main"
 if [ -d "$ANDROID_APP_DIR" ]; then
   # Add .nomedia to all resource directories
   find "$ANDROID_APP_DIR" -type d -name "assets" -exec touch {}/.nomedia \; 2>/dev/null || true
 
-  # Ensure network_security_config.xml exists
+  # Create network_security_config.xml that allows HTTPS to any domain
   RES_XML_DIR="$ANDROID_APP_DIR/res/xml"
   mkdir -p "$RES_XML_DIR"
-  if [ ! -f "$RES_XML_DIR/network_security_config.xml" ]; then
-    cat > "$RES_XML_DIR/network_security_config.xml" << 'EOF'
+  cat > "$RES_XML_DIR/network_security_config.xml" << 'EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">192.168.1.100</domain>
-        <domain includeSubdomains="true">localhost</domain>
-        <domain includeSubdomains="true">10.0.0.0</domain>
-        <domain includeSubdomains="true">172.16.0.0</domain>
-    </domain-config>
-    <base-config cleartextTrafficPermitted="true">
+    <!-- Allow HTTPS connections to any domain (cloud server) -->
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>
     </base-config>
+    <!-- Allow localhost for development -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.0.0</domain>
+    </domain-config>
 </network-security-config>
 EOF
-    echo "  network_security_config.xml created"
-  fi
+  echo "  network_security_config.xml updated for HTTPS (cloud server)"
 
   # Ensure permissions are in AndroidManifest.xml
   MANIFEST="$ANDROID_APP_DIR/AndroidManifest.xml"
   if [ -f "$MANIFEST" ]; then
-    # Add networkSecurityConfig and usesCleartextTraffic to application tag
+    # Add networkSecurityConfig to application tag
     if ! grep -q "networkSecurityConfig" "$MANIFEST"; then
       sed -i 's/android:theme="@style\/AppTheme"/android:theme="@style\/AppTheme"\n        android:networkSecurityConfig="@xml\/network_security_config"\n        android:usesCleartextTraffic="true"/' "$MANIFEST"
     fi
@@ -140,11 +146,7 @@ echo ""
 echo "=== Build Complete ==="
 echo "Static files in: out/"
 echo "APK: InkaHobby.apk and public/InkaHobby.apk"
-echo "Server: http://localhost:3000"
+echo "Server URL: $SERVER_URL"
 echo ""
-echo "IMPORTANT: After installing the APK on Android:"
-echo "  1. Open the app"
-echo "  2. Go to 'Configurar Servidor' at the bottom"
-echo "  3. Enter your server IP (e.g., http://192.168.1.100:3000)"
-echo "  4. Tap 'Probar y Guardar'"
-echo "  5. Make sure your phone is on the same WiFi as the server"
+echo "The APK is pre-configured to connect to: $SERVER_URL"
+echo "Users just download, install, and register - no IP configuration needed!"

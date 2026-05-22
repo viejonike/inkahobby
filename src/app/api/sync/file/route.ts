@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { corsHeaders } from '@/lib/cors';
 
 // Increase body size limit for large base64 file uploads (photos/videos can be 10-50MB)
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
   try {
@@ -10,7 +12,7 @@ export async function POST(request: NextRequest) {
     const { id, userId, type, data, thumbnail, createdAt, username } = body;
 
     if (!userId || !type || !data) {
-      return NextResponse.json({ error: 'userId, type, and data are required' }, { status: 400 });
+      return NextResponse.json({ error: 'userId, type, and data are required' }, { status: 400, headers: corsHeaders() });
     }
 
     // Check if the user exists first - try by id first, then by username
@@ -30,14 +32,14 @@ export async function POST(request: NextRequest) {
       console.warn(`[Sync File] User ${userId} not found on server. File sync deferred.`);
       return NextResponse.json(
         { error: 'User not found on server. File sync will be retried.', needsRetry: true },
-        { status: 404 }
+        { status: 404, headers: corsHeaders() }
       );
     }
 
     // Skip if file already exists
     const existing = await db.vaultFile.findUnique({ where: { id } });
     if (existing) {
-      return NextResponse.json({ message: 'File already synced', file: existing });
+      return NextResponse.json({ message: 'File already synced', file: existing }, { headers: corsHeaders() });
     }
 
     // Use the server's user id (in case it differs from client's)
@@ -56,9 +58,16 @@ export async function POST(request: NextRequest) {
     });
 
     console.log(`[Sync] File synced: ${file.id.slice(0, 8)}... (type: ${type}, user: ${serverUserId})`);
-    return NextResponse.json(file);
+    return NextResponse.json(file, { headers: corsHeaders() });
   } catch (error) {
     console.error('[Sync] Error syncing file:', error);
-    return NextResponse.json({ error: 'Failed to sync file' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to sync file' }, { status: 500, headers: corsHeaders() });
   }
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 200,
+    headers: corsHeaders(),
+  });
 }
