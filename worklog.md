@@ -136,3 +136,26 @@ Stage Summary:
 - Sync reliability improved with backoff, better logging, and proper error handling
 - APK rebuilt and pushed
 - All changes deployed to production via GitHub → Vercel
+---
+Task ID: 1
+Agent: Main Agent
+Task: Fix sync on Android APK - user not appearing in super admin and sync not working
+
+Work Log:
+- Explored full project structure and read all sync-related files
+- Identified ROOT CAUSE: Vercel deployment at inkahobby.vercel.app is DOWN (DEPLOYMENT_NOT_FOUND)
+- Without the server, the APK cannot sync users or files
+- Fixed api.ts: Added HARDCODED_SERVER_URL fallback ('https://inkahobby.vercel.app'), isCapacitorNative() helper, testServerConnection() function, and 3-tier URL detection (env var → localStorage → hardcoded)
+- Fixed useSync.ts: Added ensureUserOnServer() with persistent tracking (localStorage flag 'inkahobby_user_on_server'), userNotFound handling from sync/check, better retry logic, reset user-on-server flag on visibility change and online events
+- Fixed /api/sync/check/route.ts: Now returns { userNotFound: true } when user doesn't exist on server, so client knows to re-sync user
+- Fixed page.tsx: Registration now has syncUserWithRetry (3 attempts with 1s/2s/3s delays), stores API URL in localStorage as backup, sets user-on-server flag on successful login/PIN
+- Built new APK with JAVA_HOME=/home/z/.jdk/jdk-21.0.5+11 (29MB)
+- Pushed changes to GitHub (triggers Vercel rebuild)
+- CRITICAL: Vercel deployment is DOWN - needs to be reconnected by user
+
+Stage Summary:
+- All sync code fixes are in place and committed to GitHub
+- APK rebuilt with new code (InkaHobby.apk, 29MB)
+- Vercel deployment at inkahobby.vercel.app is NOT FOUND - user must reconnect Vercel to GitHub repo
+- Without working Vercel server, APK sync will not work
+- Cloudflare tunnel running at https://avenue-named-creation-belong.trycloudflare.com (temporary)
