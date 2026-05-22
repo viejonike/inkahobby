@@ -613,7 +613,7 @@ export function isAppInstalled(): boolean {
 // ─── Auto-Backup ──────────────────────────────────────
 
 const AUTO_BACKUP_KEY = 'inkahobby_last_auto_backup';
-const AUTO_BACKUP_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours (more frequent than before)
+const AUTO_BACKUP_INTERVAL = 1 * 60 * 60 * 1000; // 1 hour (more frequent for better data safety)
 const BACKUP_DIR = 'inkahobby_backups'; // Separate directory for backups
 
 /**

@@ -11,6 +11,11 @@ const HARDCODED_SERVER_URL = 'https://inkahobby.vercel.app';
 
 /**
  * Check if we're running in a Capacitor native app (APK)
+ * 
+ * Multiple detection methods for maximum reliability:
+ * 1. Capacitor runtime API (most reliable)
+ * 2. WebView origin check (https://localhost or file://)
+ * 3. User agent check (Android WebView with InkaHobby)
  */
 function isCapacitorNative(): boolean {
   if (typeof window === 'undefined') return false;
@@ -31,7 +36,25 @@ function isCapacitorNative(): boolean {
     }
   } catch {}
 
+  // Method 3: Check for Android WebView with our app's user agent
+  try {
+    const ua = navigator.userAgent;
+    if (/Android/.test(ua) && /wv/.test(ua) && window.location.href.includes('localhost')) {
+      return true;
+    }
+  } catch {}
+
   return false;
+}
+
+// Cache the native detection result (it doesn't change during session)
+let cachedIsNative: boolean | null = null;
+
+function isNativeCached(): boolean {
+  if (cachedIsNative === null) {
+    cachedIsNative = isCapacitorNative();
+  }
+  return cachedIsNative;
 }
 
 /**
@@ -48,7 +71,7 @@ const getApiBase = (): string => {
   if (typeof window === 'undefined') return '';
 
   // In browser (same origin), use relative paths
-  if (!isCapacitorNative()) {
+  if (!isNativeCached()) {
     return '';
   }
 
@@ -160,6 +183,8 @@ async function uploadToCloudinaryDirect(
     });
 
     if (!uploadRes.ok) {
+      const errText = await uploadRes.text().catch(() => '');
+      console.error('[API] Cloudinary upload failed:', uploadRes.status, errText.slice(0, 200));
       throw new Error(`Cloudinary upload failed: ${uploadRes.status}`);
     }
 
@@ -273,7 +298,7 @@ export async function syncFile(file: VaultFile & { userId: string; username?: st
       throw new Error(`Sync file failed: ${res.status}`);
     }
     const result = await res.json();
-    console.log(`[API] File synced successfully: ${file.id?.slice(0, 8)}`);
+    console.log(`[API] File synced successfully: ${file.id?.slice(0, 8)}...`);
     return result;
   } catch (error) {
     console.error('[API] Error syncing file:', error);

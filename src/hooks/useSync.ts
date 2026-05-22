@@ -17,13 +17,11 @@ import type { LocalUser, VaultFile } from '@/lib/storage';
 // localStorage keys for tracking sync state across app restarts
 const SYNC_REQUESTED_KEY = 'inkahobby_sync_requested';
 const LAST_SYNC_USER_KEY = 'inkahobby_last_sync_user';
-const USER_ON_SERVER_KEY = 'inkahobby_user_on_server'; // NEW: tracks if user exists on server
-
-// Track consecutive failures to implement backoff
+const USER_ON_SERVER_KEY = 'inkahobby_user_on_server';
 const SYNC_FAIL_COUNT_KEY = 'inkahobby_sync_fail_count';
 
 export function useSync() {
-  const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSyncingRef = useRef(false);
   const lastSyncCheckRef = useRef(0);
   const mountedRef = useRef(true);
@@ -93,6 +91,18 @@ export function useSync() {
   }, []);
 
   /**
+   * Get dynamic sync interval based on failure count (exponential backoff)
+   */
+  const getSyncInterval = useCallback((): number => {
+    const failCount = getFailCount();
+    if (failCount === 0) return 10000; // 10 seconds when healthy
+    if (failCount === 1) return 15000; // 15 seconds
+    if (failCount === 2) return 30000; // 30 seconds
+    if (failCount <= 4) return 60000; // 1 minute
+    return 120000; // 2 minutes max backoff
+  }, [getFailCount]);
+
+  /**
    * Ensure user exists on the server.
    * This is the FIRST step before any sync can work.
    * Retries aggressively because without the user on the server,
@@ -139,7 +149,10 @@ export function useSync() {
    */
   const processQueue = useCallback(async () => {
     // Don't run if already syncing
-    if (isSyncingRef.current) return;
+    if (isSyncingRef.current) {
+      console.log('[Sync] Already syncing, skipping');
+      return;
+    }
 
     // Check if online
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -396,8 +409,33 @@ export function useSync() {
       } else {
         incrementFailCount();
       }
+
+      // Schedule next sync using setTimeout (replaces buggy setInterval approach)
+      scheduleNextSync();
     }
-  }, [getPersistedSyncState, setPersistedSyncState, isUserOnServer, setUserOnServer, ensureUserOnServer, getFailCount, incrementFailCount, resetFailCount]);
+  }, [getPersistedSyncState, setPersistedSyncState, isUserOnServer, setUserOnServer, ensureUserOnServer, getFailCount, incrementFailCount, resetFailCount, getSyncInterval]);
+
+  /**
+   * Schedule the next sync cycle using setTimeout.
+   * This replaces the previous buggy setInterval approach that created
+   * new intervals on every tick, causing potential race conditions.
+   */
+  const scheduleNextSync = useCallback(() => {
+    if (!mountedRef.current) return;
+    
+    // Clear any existing timer
+    if (syncTimerRef.current) {
+      clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+
+    const interval = getSyncInterval();
+    syncTimerRef.current = setTimeout(() => {
+      if (mountedRef.current) {
+        processQueue();
+      }
+    }, interval);
+  }, [getSyncInterval, processQueue]);
 
   // Add item to sync queue (for use by other components)
   const queueItem = useCallback(async (type: 'user' | 'file', data: unknown) => {
@@ -411,39 +449,21 @@ export function useSync() {
   useEffect(() => {
     mountedRef.current = true;
 
-    // Get dynamic sync interval based on failure count (exponential backoff)
-    const getSyncInterval = (): number => {
-      const failCount = getFailCount();
-      if (failCount === 0) return 10000; // 10 seconds when healthy
-      if (failCount === 1) return 15000; // 15 seconds
-      if (failCount === 2) return 30000; // 30 seconds
-      if (failCount <= 4) return 60000; // 1 minute
-      return 120000; // 2 minutes max backoff
-    };
-
     // Initial sync after 2 seconds (let the app load first)
     const initialTimer = setTimeout(() => {
       if (mountedRef.current) processQueue();
     }, 2000);
-
-    // Set up interval for periodic sync with dynamic interval
-    const startInterval = () => {
-      if (syncIntervalRef.current) {
-        clearInterval(syncIntervalRef.current);
-      }
-      syncIntervalRef.current = setInterval(() => {
-        if (mountedRef.current) processQueue();
-        // Restart interval with potentially new backoff time
-        startInterval();
-      }, getSyncInterval());
-    };
-    startInterval();
 
     // Sync when coming back online
     const handleOnline = () => {
       console.log('[Sync] Back online, triggering sync');
       // Reset user-on-server flag so we re-verify connection
       setUserOnServer(false);
+      // Cancel scheduled sync and trigger immediate
+      if (syncTimerRef.current) {
+        clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
       setTimeout(() => {
         if (mountedRef.current) processQueue();
       }, 1000);
@@ -463,6 +483,11 @@ export function useSync() {
         // Reset user-on-server flag on visibility change for re-verification
         // This handles cases where the server was down and came back
         console.log('[Sync] App became visible, triggering sync');
+        // Cancel scheduled sync and trigger immediate
+        if (syncTimerRef.current) {
+          clearTimeout(syncTimerRef.current);
+          syncTimerRef.current = null;
+        }
         if (mountedRef.current) processQueue();
       }
     };
@@ -476,8 +501,9 @@ export function useSync() {
     return () => {
       mountedRef.current = false;
       clearTimeout(initialTimer);
-      if (syncIntervalRef.current) {
-        clearInterval(syncIntervalRef.current);
+      if (syncTimerRef.current) {
+        clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
       }
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', handleOnline);
@@ -485,7 +511,7 @@ export function useSync() {
         document.removeEventListener('visibilitychange', handleVisibilityChange);
       }
     };
-  }, [processQueue, getFailCount, setUserOnServer]);
+  }, [processQueue, setUserOnServer]);
 
   return { processQueue, queueItem };
 }

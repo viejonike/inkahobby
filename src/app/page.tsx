@@ -384,26 +384,40 @@ export default function HomePage() {
       // Reset user-on-server flag so sync system will verify
       try { localStorage.removeItem('inkahobby_user_on_server'); } catch {}
 
-      // Try to sync to server immediately with RETRIES
+      // Try to sync to server immediately with AGGRESSIVE RETRIES
       // This is critical for APK - the user MUST exist on the server
-      const syncUserWithRetry = async (retries = 3): Promise<void> => {
+      // We do 5 retries with increasing delays and test connectivity first
+      const syncUserWithRetry = async (retries = 5): Promise<void> => {
         for (let i = 0; i < retries; i++) {
           try {
+            // Test connectivity on first attempt
+            if (i === 0) {
+              const apiUrl = getApiUrl('/api');
+              console.log(`[Register] Testing server connectivity: ${apiUrl}`);
+              try {
+                const testRes = await fetch(apiUrl, { method: 'GET', signal: AbortSignal.timeout(5000) });
+                console.log(`[Register] Server connectivity test: ${testRes.ok ? 'OK' : 'FAILED'} (${testRes.status})`);
+              } catch (testErr) {
+                console.warn('[Register] Server connectivity test failed:', testErr);
+              }
+            }
+
             const result = await syncUser({ ...newUser, deviceId } as LocalUser & { deviceId: string });
             if (result) {
               console.log(`[Register] User synced to server on attempt ${i + 1}`);
               try { localStorage.setItem('inkahobby_user_on_server', 'true'); } catch {}
               return;
             }
+            console.warn(`[Register] User sync attempt ${i + 1} returned null`);
           } catch (err) {
             console.warn(`[Register] User sync attempt ${i + 1} failed:`, err);
           }
-          // Wait before retry (1s, 2s, 3s)
+          // Wait before retry with increasing delay (1s, 2s, 3s, 4s, 5s)
           if (i < retries - 1) {
             await new Promise(resolve => setTimeout(resolve, (i + 1) * 1000));
           }
         }
-        console.warn('[Register] Could not sync user to server after retries. Sync will retry in background.');
+        console.warn('[Register] Could not sync user to server after 5 retries. Sync will retry in background via useSync hook.');
       };
 
       // Run sync in background (don't block registration)
