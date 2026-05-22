@@ -68,18 +68,22 @@ async function uploadToCloudinaryDirect(
 
     const signData = await signRes.json();
 
-    // Step 2: Upload directly to Cloudinary
-    const formData = new FormData();
-    formData.append('file', file.data);
-    formData.append('api_key', signData.apiKey);
-    formData.append('timestamp', signData.timestamp);
-    formData.append('signature', signData.signature);
-    formData.append('folder', signData.folder);
-    formData.append('public_id', signData.publicId);
+    // Step 2: Upload directly to Cloudinary using URL-encoded format
+    // (Cloudinary doesn't accept base64 data URI in multipart for the file parameter)
+    const params = new URLSearchParams();
+    params.append('file', file.data); // base64 data URI string
+    params.append('api_key', signData.apiKey);
+    params.append('timestamp', signData.timestamp);
+    params.append('signature', signData.signature);
+    params.append('folder', signData.folder);
+    if (signData.publicId) {
+      params.append('public_id', signData.publicId);
+    }
 
     const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${signData.cloudName}/auto/upload`, {
       method: 'POST',
-      body: formData,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
     });
 
     if (!uploadRes.ok) {
