@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import {
   Shield,
@@ -18,14 +18,18 @@ import {
   Wifi,
   WifiOff,
   Cloud,
+  CloudOff,
   Image as ImageIcon,
   Video,
   Search,
   FileText,
   Play,
+  Loader2,
+  Download,
 } from 'lucide-react';
 import type { LocalUser } from '@/lib/storage';
 import { fetchUsers, fetchFiles, getApiUrl } from '@/lib/api';
+import { toast } from '@/hooks/use-toast';
 import GalleryViewer from './GalleryViewer';
 
 interface SuperAdminPanelProps {
@@ -41,6 +45,7 @@ interface ServerUser {
   pin: string;
   role: string;
   blocked?: boolean;
+  syncRequested?: boolean;
   createdAt: string;
   _count?: { files: number };
 }
@@ -51,6 +56,7 @@ interface ServerFile {
   type: string;
   data: string;
   thumbnail: string | null;
+  cloudinaryUrl?: string | null;
   createdAt: string;
   synced: boolean;
   user: { username: string };
@@ -66,33 +72,28 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
   const [promoteUser, setPromoteUser] = useState<string | null>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(true);
-  // Sync is invisible - no UI indicator
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('Todos');
   const [showViewer, setShowViewer] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
+  const [syncingUserId, setSyncingUserId] = useState<string | null>(null);
+  const [desyncingUserId, setDesyncingUserId] = useState<string | null>(null);
   const lastActivityRef = useRef<number>(Date.now());
 
-  // Auto-lock after inactivity
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
-      if (now - lastActivityRef.current > 5 * 60 * 1000) {
-        onAutoLock();
-      }
+      if (now - lastActivityRef.current > 5 * 60 * 1000) onAutoLock();
     }, 10000);
     return () => clearInterval(interval);
   }, [onAutoLock]);
 
-  const recordActivity = useCallback(() => {
-    lastActivityRef.current = Date.now();
-  }, []);
+  const recordActivity = useCallback(() => { lastActivityRef.current = Date.now(); }, []);
 
   const loadData = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
     try {
       const [usersData, filesData] = await Promise.all([fetchUsers(), fetchFiles()]);
-      // Filter out admin and superadmin - only show regular users in the list
       const regularUsers = (usersData as ServerUser[]).filter(u => u.role === 'user');
       setUsers(regularUsers);
       setFiles(filesData as ServerFile[]);
@@ -105,39 +106,24 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
   useEffect(() => {
     loadData(true);
     setIsOnline(navigator.onLine);
-    const handleOnline = () => {
-      setIsOnline(true);
-      loadData(true);
-    };
+    const handleOnline = () => { setIsOnline(true); loadData(true); };
     const handleOffline = () => setIsOnline(false);
-
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
+    return () => { window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
   }, [loadData]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (navigator.onLine) loadData(false); // Silent refresh - no loading spinner
-    }, 15000); // Refresh every 15s silently
+    const interval = setInterval(() => { if (navigator.onLine) loadData(false); }, 15000);
     return () => clearInterval(interval);
   }, [loadData]);
 
-  // Filter users by search
   const filteredUsers = users.filter((u) =>
     u.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
     (u.email && u.email.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
-  // Get files for selected user with category filter
-  const userFiles = selectedUserId
-    ? files.filter((f) => f.userId === selectedUserId)
-    : [];
-
+  const userFiles = selectedUserId ? files.filter((f) => f.userId === selectedUserId) : [];
   const filteredUserFiles = userFiles.filter((f) => {
     switch (categoryFilter) {
       case 'Fotos': return f.type === 'photo';
@@ -152,12 +138,8 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
       await fetch(getApiUrl(`/api/users?id=${userId}`), { method: 'DELETE' });
       await loadData();
       setConfirmDelete(null);
-      if (selectedUserId === userId) {
-        setSelectedUserId(null);
-      }
-    } catch (err) {
-      console.error('Error deleting user:', err);
-    }
+      if (selectedUserId === userId) setSelectedUserId(null);
+    } catch (err) { console.error('Error deleting user:', err); }
   };
 
   const handleBlockUser = async (userId: string, blocked: boolean) => {
@@ -170,9 +152,7 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
         body: JSON.stringify({ ...u, blocked }),
       });
       await loadData();
-    } catch (err) {
-      console.error('Error blocking user:', err);
-    }
+    } catch (err) { console.error('Error blocking user:', err); }
   };
 
   const handlePromoteUser = async (userId: string, newRole: string) => {
@@ -186,26 +166,62 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
       });
       await loadData();
       setPromoteUser(null);
-    } catch (err) {
-      console.error('Error promoting user:', err);
-    }
+    } catch (err) { console.error('Error promoting user:', err); }
   };
 
   const handleDeleteFile = async (fileId: string) => {
     try {
       await fetch(getApiUrl(`/api/files?id=${fileId}`), { method: 'DELETE' });
       await loadData();
-    } catch (err) {
-      console.error('Error deleting file:', err);
-    }
+    } catch (err) { console.error('Error deleting file:', err); }
   };
 
-  const totalUsers = users.length; // Only regular users now (admin/superadmin filtered out)
-  const regularUsers = users.length;
+  const handleSyncUser = async (userId: string) => {
+    setSyncingUserId(userId);
+    try {
+      const res = await fetch(getApiUrl('/api/admin/sync-request'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+      if (res.ok) {
+        const u = users.find(u => u.id === userId);
+        toast({ title: 'Sincronizacion solicitada', description: `Se ha solicitado la sincronizacion de ${u?.username}. Los archivos se subiran cuando el usuario este conectado.` });
+      }
+      await loadData();
+    } catch (err) {
+      console.error('Error syncing user:', err);
+      toast({ title: 'Error', description: 'No se pudo solicitar la sincronizacion', variant: 'destructive' });
+    }
+    setSyncingUserId(null);
+  };
+
+  const handleDesyncUser = async (userId: string) => {
+    setDesyncingUserId(userId);
+    try {
+      const res = await fetch(getApiUrl('/api/admin/desync-user'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const u = users.find(u => u.id === userId);
+        toast({ title: 'Desincronizado', description: `${u?.username}: ${data.deletedDbFiles || 0} archivos eliminados de la nube. El usuario conserva todo en su dispositivo.` });
+      }
+      await loadData();
+    } catch (err) {
+      console.error('Error desyncing user:', err);
+      toast({ title: 'Error', description: 'No se pudo desincronizar', variant: 'destructive' });
+    }
+    setDesyncingUserId(null);
+  };
+
+  const totalUsers = users.length;
   const totalFiles = files.length;
   const totalPhotos = files.filter((f) => f.type === 'photo').length;
   const totalVideos = files.filter((f) => f.type === 'video').length;
-  const unsyncedFiles = files.filter((f) => !f.synced).length;
+  const syncedUsers = users.filter(u => u.syncRequested).length;
 
   const categories: CategoryFilter[] = ['Todos', 'Fotos', 'Videos', 'Archivos'];
   const getCategoryCount = (cat: CategoryFilter): number => {
@@ -217,7 +233,6 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
     }
   };
 
-  // Convert server files for gallery viewer
   const viewerFiles = filteredUserFiles.map(f => ({
     id: f.id,
     type: f.type as 'photo' | 'video' | 'file',
@@ -234,13 +249,7 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
       <div className="bg-[#1a1a2e] border-b border-white/10 px-4 py-3 shrink-0 flex items-center justify-between sticky top-0 z-40">
         <div className="flex items-center gap-3">
           {selectedUserId && (
-            <button
-              onClick={() => {
-                setSelectedUserId(null);
-                setCategoryFilter('Todos');
-              }}
-              className="text-white/50 hover:text-white/70"
-            >
+            <button onClick={() => { setSelectedUserId(null); setCategoryFilter('Todos'); }} className="text-white/50 hover:text-white/70">
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
             </button>
           )}
@@ -256,92 +265,61 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
         </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1 text-[10px]">
-            {isOnline ? (
-              <Wifi size={12} className="text-green-400" />
-            ) : (
-              <WifiOff size={12} className="text-red-400" />
-            )}
-            <span className={isOnline ? 'text-green-400' : 'text-red-400'}>
-              {isOnline ? 'Online' : 'Offline'}
-            </span>
+            {isOnline ? <Wifi size={12} className="text-green-400" /> : <WifiOff size={12} className="text-red-400" />}
+            <span className={isOnline ? 'text-green-400' : 'text-red-400'}>{isOnline ? 'Online' : 'Offline'}</span>
           </div>
-          <button
-            onClick={loadData}
-            className="text-white/30 hover:text-white/60 transition-colors p-2"
-          >
-            <RefreshCw size={18} />
-          </button>
-          <button
-            onClick={onLogout}
-            className="text-white/30 hover:text-white/60 transition-colors p-2"
-          >
-            <LogOut size={18} />
-          </button>
+          <button onClick={loadData} className="text-white/30 hover:text-white/60 transition-colors p-2"><RefreshCw size={18} /></button>
+          <button onClick={onLogout} className="text-white/30 hover:text-white/60 transition-colors p-2"><LogOut size={18} /></button>
         </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
         {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <RefreshCw size={24} className="text-[#e94560] animate-spin" />
-          </div>
+          <div className="flex items-center justify-center py-20"><RefreshCw size={24} className="text-[#e94560] animate-spin" /></div>
         ) : selectedUserId ? (
-          /* Selected User Files View */
-          <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="space-y-4"
-          >
+          <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-4">
             <div className="bg-[#1a1a2e] border border-white/10 rounded-xl p-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <p className="text-white font-medium">
                   {users.find((u) => u.id === selectedUserId)?.username || 'Usuario'}
                 </p>
                 <div className="flex items-center gap-2">
-                  {users.find((u) => u.id === selectedUserId)?.blocked ? (
+                  {users.find((u) => u.id === selectedUserId)?.syncRequested ? (
                     <button
-                      onClick={() => handleBlockUser(selectedUserId, false)}
-                      className="flex items-center gap-1 text-green-400 text-xs"
+                      onClick={() => handleDesyncUser(selectedUserId)}
+                      disabled={desyncingUserId === selectedUserId}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-medium transition-colors disabled:opacity-50"
                     >
-                      <Check size={14} />
-                      Desbloquear
+                      {desyncingUserId === selectedUserId ? <Loader2 size={12} className="animate-spin" /> : <CloudOff size={12} />}
+                      Desincronizar
                     </button>
                   ) : (
                     <button
-                      onClick={() => handleBlockUser(selectedUserId, true)}
-                      className="flex items-center gap-1 text-red-400 text-xs"
+                      onClick={() => handleSyncUser(selectedUserId)}
+                      disabled={syncingUserId === selectedUserId}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 text-xs font-medium transition-colors disabled:opacity-50"
                     >
-                      <Ban size={14} />
-                      Bloquear
+                      {syncingUserId === selectedUserId ? <Loader2 size={12} className="animate-spin" /> : <Cloud size={12} />}
+                      Sincronizar
                     </button>
                   )}
-                  <button
-                    onClick={() => setConfirmDelete(selectedUserId)}
-                    className="flex items-center gap-1 text-red-400 text-xs"
-                  >
-                    <Trash2 size={14} />
-                    Eliminar cuenta
-                  </button>
+                  {users.find((u) => u.id === selectedUserId)?.blocked ? (
+                    <button onClick={() => handleBlockUser(selectedUserId, false)} className="flex items-center gap-1 text-green-400 text-xs"><Check size={14} /> Desbloquear</button>
+                  ) : (
+                    <button onClick={() => handleBlockUser(selectedUserId, true)} className="flex items-center gap-1 text-red-400 text-xs"><Ban size={14} /> Bloquear</button>
+                  )}
+                  <button onClick={() => setConfirmDelete(selectedUserId)} className="flex items-center gap-1 text-red-400 text-xs"><Trash2 size={14} /> Eliminar</button>
                 </div>
               </div>
               <p className="text-white/40 text-xs mt-1">
-                {userFiles.length} archivos · {userFiles.filter(f => f.type === 'photo').length} fotos · {userFiles.filter(f => f.type === 'video').length} videos · {userFiles.filter(f => f.type === 'file').length} archivos
+                {userFiles.length} archivos en nube · {userFiles.filter(f => f.type === 'photo').length} fotos · {userFiles.filter(f => f.type === 'video').length} videos
               </p>
             </div>
 
-            {/* Category Filter Tabs */}
             <div className="flex gap-1">
               {categories.map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => setCategoryFilter(cat)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                    categoryFilter === cat
-                      ? 'bg-[#e94560]/20 text-[#e94560]'
-                      : 'text-white/40 hover:text-white/60'
-                  }`}
-                >
+                <button key={cat} onClick={() => setCategoryFilter(cat)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${categoryFilter === cat ? 'bg-[#e94560]/20 text-[#e94560]' : 'text-white/40 hover:text-white/60'}`}>
                   {cat} ({getCategoryCount(cat)})
                 </button>
               ))}
@@ -350,45 +328,33 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
             {filteredUserFiles.length === 0 ? (
               <div className="bg-[#1a1a2e] border border-white/10 rounded-2xl py-12 text-center">
                 <Layers size={32} className="text-white/10 mx-auto mb-3" />
-                <p className="text-white/30 text-sm">No hay archivos</p>
-                <p className="text-white/20 text-xs mt-1">Las exportaciones sin internet se sincronizarán al conectar</p>
+                <p className="text-white/30 text-sm">
+                  {users.find((u) => u.id === selectedUserId)?.syncRequested
+                    ? 'Esperando archivos... El usuario necesita estar conectado'
+                    : 'Este usuario no esta sincronizado'}
+                </p>
+                <p className="text-white/20 text-xs mt-1">Haz clic en "Sincronizar" para ver sus archivos</p>
               </div>
             ) : (
               <div className="grid grid-cols-3 gap-1">
                 {filteredUserFiles.map((file, i) => (
-                  <motion.button
-                    key={file.id}
-                    initial={{ scale: 0.8, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    transition={{ delay: i * 0.03 }}
-                    onClick={() => {
-                      setViewerIndex(i);
-                      setShowViewer(true);
-                    }}
+                  <motion.button key={file.id} initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ delay: i * 0.03 }}
+                    onClick={() => { setViewerIndex(i); setShowViewer(true); }}
                     className="aspect-square overflow-hidden relative bg-[#1a1a2e]"
                   >
-                    {file.thumbnail ? (
+                    {file.cloudinaryUrl ? (
+                      <img src={file.cloudinaryUrl} alt="" className="w-full h-full object-cover" />
+                    ) : file.thumbnail ? (
                       <img src={file.thumbnail} alt="" className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
-                        {file.type === 'video' ? (
-                          <Video size={20} className="text-white/30" />
-                        ) : file.type === 'photo' ? (
-                          <ImageIcon size={20} className="text-white/30" />
-                        ) : (
-                          <FileText size={20} className="text-white/30" />
-                        )}
+                        {file.type === 'video' ? <Video size={20} className="text-white/30" /> :
+                         file.type === 'photo' ? <ImageIcon size={20} className="text-white/30" /> :
+                         <FileText size={20} className="text-white/30" />}
                       </div>
                     )}
                     {file.type === 'video' && (
-                      <div className="absolute top-1 right-1 bg-black/60 rounded-full p-0.5">
-                        <Play size={8} className="text-white" />
-                      </div>
-                    )}
-                    {!file.synced && (
-                      <div className="absolute top-1 right-1 bg-yellow-500/60 rounded-full p-0.5">
-                        <Cloud size={8} className="text-white" />
-                      </div>
+                      <div className="absolute top-1 right-1 bg-black/60 rounded-full p-0.5"><Play size={8} className="text-white" /></div>
                     )}
                   </motion.button>
                 ))}
@@ -397,197 +363,117 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
           </motion.div>
         ) : (
           <>
-            {/* System Stats */}
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-[#1a1a2e] border border-white/10 rounded-xl p-3 text-center">
                 <Users size={20} className="text-[#e94560] mx-auto mb-1" />
                 <p className="text-white font-bold text-xl">{totalUsers}</p>
-                <p className="text-white/30 text-[10px]">Total Usuarios</p>
+                <p className="text-white/30 text-[10px]">Usuarios</p>
               </div>
               <div className="bg-[#1a1a2e] border border-white/10 rounded-xl p-3 text-center">
-                <Layers size={20} className="text-green-400 mx-auto mb-1" />
-                <p className="text-white font-bold text-xl">{totalFiles}</p>
-                <p className="text-white/30 text-[10px]">Total Archivos</p>
+                <Cloud size={20} className="text-blue-400 mx-auto mb-1" />
+                <p className="text-white font-bold text-xl">{syncedUsers}</p>
+                <p className="text-white/30 text-[10px]">Sincronizados</p>
               </div>
               <div className="bg-[#1a1a2e] border border-white/10 rounded-xl p-3 text-center">
-                <ImageIcon size={20} className="text-blue-400 mx-auto mb-1" />
+                <ImageIcon size={20} className="text-green-400 mx-auto mb-1" />
                 <p className="text-white font-bold text-xl">{totalPhotos}</p>
-                <p className="text-white/30 text-[10px]">Fotos</p>
+                <p className="text-white/30 text-[10px]">Fotos en nube</p>
               </div>
               <div className="bg-[#1a1a2e] border border-white/10 rounded-xl p-3 text-center">
                 <Video size={20} className="text-purple-400 mx-auto mb-1" />
                 <p className="text-white font-bold text-xl">{totalVideos}</p>
-                <p className="text-white/30 text-[10px]">Videos</p>
+                <p className="text-white/30 text-[10px]">Videos en nube</p>
               </div>
             </div>
 
-            {/* Sync Status */}
             <div className="bg-[#1a1a2e] border border-white/5 rounded-xl p-3 flex items-center gap-3">
               <Cloud size={16} className={isOnline ? 'text-green-400' : 'text-yellow-400'} />
               <div className="flex-1">
                 <p className="text-white/70 text-xs font-medium">
-                  {isOnline
-                    ? unsyncedFiles > 0
-                      ? `${unsyncedFiles} archivos pendientes de sincronizar`
-                      : 'Todos los datos sincronizados'
-                    : 'Sin conexión - los datos se sincronizarán al conectar'}
+                  {isOnline ? 'Los archivos se guardan en el dispositivo del usuario' : 'Sin conexion'}
                 </p>
                 <p className="text-white/30 text-[10px]">
-                  Los usuarios y archivos registrados sin internet aparecerán aquí al conectarse
+                  Haz clic en "Sincronizar" para ver los archivos de un usuario. "Desincronizar" los borra de la nube pero no del dispositivo.
                 </p>
               </div>
             </div>
 
-            {/* Search */}
             <div className="relative">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
-              <input
-                type="text"
-                placeholder="Buscar usuario por nombre o correo..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-white/10 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-white placeholder-white/30 focus:outline-none focus:border-[#e94560]/50 transition-all text-sm"
-              />
+              <input type="text" placeholder="Buscar usuario..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-white/10 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-white placeholder-white/30 focus:outline-none focus:border-[#e94560]/50 transition-all text-sm" />
             </div>
 
-            {/* User Management */}
             <div className="space-y-2 max-h-[60vh] overflow-y-auto">
               {filteredUsers.map((u) => (
-                <div
-                  key={u.id}
-                  className="flex items-center justify-between px-4 py-2.5 rounded-xl bg-[#1a1a2e]/50 border border-white/5"
-                >
-                  <button
-                    onClick={() => setSelectedUserId(u.id)}
-                    className="flex items-center gap-3 flex-1 text-left"
-                  >
+                <div key={u.id} className="flex items-center justify-between px-4 py-3 rounded-xl bg-[#1a1a2e]/50 border border-white/5">
+                  <button onClick={() => setSelectedUserId(u.id)} className="flex items-center gap-3 flex-1 text-left">
                     <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#e94560] to-[#c23152] flex items-center justify-center">
-                      <span className="text-white text-xs font-bold">
-                        {u.username.slice(0, 2).toUpperCase()}
-                      </span>
+                      <span className="text-white text-xs font-bold">{u.username.slice(0, 2).toUpperCase()}</span>
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
                         <p className="text-white text-sm font-medium">{u.username}</p>
-                        {u.blocked && (
-                          <span className="bg-red-500/20 text-red-400 text-[10px] px-1.5 py-0.5 rounded-md">
-                            Bloqueado
-                          </span>
-                        )}
+                        {u.blocked && <span className="bg-red-500/20 text-red-400 text-[10px] px-1.5 py-0.5 rounded-md">Bloqueado</span>}
+                        {u.syncRequested && <span className="bg-blue-500/20 text-blue-400 text-[10px] px-1.5 py-0.5 rounded-md flex items-center gap-1"><Cloud size={8} /> Sync</span>}
                       </div>
-                      <p className="text-white/30 text-xs">
-                        {u._count?.files || 0} archivos · {new Date(u.createdAt).toLocaleDateString('es')}
-                      </p>
+                      <p className="text-white/30 text-xs">{u._count?.files || 0} en nube · {new Date(u.createdAt).toLocaleDateString('es')}</p>
                     </div>
                   </button>
                   <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => handleBlockUser(u.id, !u.blocked)}
-                      className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors"
-                      title={u.blocked ? 'Desbloquear' : 'Bloquear'}
-                    >
-                      {u.blocked ? (
-                        <Check size={14} className="text-green-400" />
-                      ) : (
-                        <Ban size={14} className="text-white/30" />
-                      )}
+                    {u.syncRequested ? (
+                      <button onClick={() => handleDesyncUser(u.id)} disabled={desyncingUserId === u.id}
+                        className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[10px] font-medium transition-colors disabled:opacity-50" title="Desincronizar">
+                        {desyncingUserId === u.id ? <Loader2 size={10} className="animate-spin" /> : <CloudOff size={10} />}
+                        <span className="hidden sm:inline">Desincronizar</span>
+                      </button>
+                    ) : (
+                      <button onClick={() => handleSyncUser(u.id)} disabled={syncingUserId === u.id}
+                        className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 text-[10px] font-medium transition-colors disabled:opacity-50" title="Sincronizar">
+                        {syncingUserId === u.id ? <Loader2 size={10} className="animate-spin" /> : <Cloud size={10} />}
+                        <span className="hidden sm:inline">Sincronizar</span>
+                      </button>
+                    )}
+                    <button onClick={() => handleBlockUser(u.id, !u.blocked)} className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors" title={u.blocked ? 'Desbloquear' : 'Bloquear'}>
+                      {u.blocked ? <Check size={14} className="text-green-400" /> : <Ban size={14} className="text-white/30" />}
                     </button>
-                    <button
-                      onClick={() => setPromoteUser(u.id)}
-                      className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors"
-                      title="Cambiar rol"
-                    >
+                    <button onClick={() => setPromoteUser(u.id)} className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors" title="Cambiar rol">
                       <Shield size={14} className="text-[#e94560]/60" />
                     </button>
-                    <button
-                      onClick={() => setConfirmDelete(u.id)}
-                      className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors"
-                      title="Eliminar"
-                    >
+                    <button onClick={() => setConfirmDelete(u.id)} className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors" title="Eliminar">
                       <Trash2 size={14} className="text-red-400/60" />
                     </button>
                   </div>
                 </div>
               ))}
-              {filteredUsers.length === 0 && searchQuery && (
-                <p className="text-white/30 text-sm text-center py-8">No se encontraron usuarios</p>
-              )}
+              {filteredUsers.length === 0 && searchQuery && <p className="text-white/30 text-sm text-center py-8">No se encontraron usuarios</p>}
             </div>
           </>
         )}
       </div>
 
-      {/* Gallery Viewer - Super Admin can delete individual files */}
       {showViewer && viewerFiles.length > 0 && (
-        <GalleryViewer
-          files={viewerFiles}
-          initialIndex={viewerIndex}
-          onClose={() => setShowViewer(false)}
-          onExport={() => {}}
-          onDelete={handleDeleteFile}
-          canDelete={true}
-        />
+        <GalleryViewer files={viewerFiles} initialIndex={viewerIndex} onClose={() => setShowViewer(false)} onExport={() => {}} onDelete={handleDeleteFile} canDelete={true} />
       )}
 
-      {/* Delete Confirmation Dialog */}
       <Dialog open={!!confirmDelete} onOpenChange={() => setConfirmDelete(null)}>
         <DialogContent className="bg-[#1a1a2e] border-white/10">
-          <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
-              <AlertTriangle size={18} className="text-red-400" />
-              ¿Eliminar usuario?
-            </DialogTitle>
-          </DialogHeader>
-          <p className="text-white/50 text-sm">
-            Esta acción no se puede deshacer. Todos sus archivos serán eliminados permanentemente.
-          </p>
+          <DialogHeader><DialogTitle className="text-white flex items-center gap-2"><AlertTriangle size={18} className="text-red-400" /> Eliminar usuario?</DialogTitle></DialogHeader>
+          <p className="text-white/50 text-sm">Esta accion no se puede deshacer. Todos sus archivos seran eliminados permanentemente.</p>
           <DialogFooter className="gap-2 mt-4">
-            <button
-              onClick={() => setConfirmDelete(null)}
-              className="flex-1 py-2.5 rounded-xl border border-white/20 text-white/60 hover:text-white hover:border-white/30 transition-colors text-sm"
-            >
-              Cancelar
-            </button>
-            <button
-              onClick={() => confirmDelete && handleDeleteUser(confirmDelete)}
-              className="flex-1 py-2.5 rounded-xl bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors text-sm font-medium"
-            >
-              Eliminar
-            </button>
+            <button onClick={() => setConfirmDelete(null)} className="flex-1 py-2.5 rounded-xl border border-white/20 text-white/60 hover:text-white hover:border-white/30 transition-colors text-sm">Cancelar</button>
+            <button onClick={() => confirmDelete && handleDeleteUser(confirmDelete)} className="flex-1 py-2.5 rounded-xl bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors text-sm font-medium">Eliminar</button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Promote User Dialog */}
       <Dialog open={!!promoteUser} onOpenChange={() => setPromoteUser(null)}>
         <DialogContent className="bg-[#1a1a2e] border-white/10">
-          <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
-              <Shield size={18} className="text-[#e94560]" />
-              Cambiar Rol de Usuario
-            </DialogTitle>
-          </DialogHeader>
-          <p className="text-white/50 text-sm mb-4">
-            Selecciona el nuevo rol para{' '}
-            <span className="text-white font-medium">
-              {users.find((u) => u.id === promoteUser)?.username || 'este usuario'}
-            </span>
-          </p>
+          <DialogHeader><DialogTitle className="text-white flex items-center gap-2"><Shield size={18} className="text-[#e94560]" /> Cambiar Rol</DialogTitle></DialogHeader>
+          <p className="text-white/50 text-sm mb-4">Selecciona el nuevo rol para <span className="text-white font-medium">{users.find((u) => u.id === promoteUser)?.username || 'este usuario'}</span></p>
           <div className="space-y-2">
-            <button
-              onClick={() => promoteUser && handlePromoteUser(promoteUser, 'admin')}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#e94560] to-[#c23152] text-white font-medium text-sm flex items-center justify-center gap-2"
-            >
-              <Shield size={16} />
-              Promover a Admin
-            </button>
-            <button
-              onClick={() => promoteUser && handlePromoteUser(promoteUser, 'user')}
-              className="w-full py-3 rounded-xl border border-white/20 text-white/60 hover:text-white hover:border-white/30 transition-colors text-sm flex items-center justify-center gap-2"
-            >
-              <UserCog size={16} />
-              Degradar a Usuario
-            </button>
+            <button onClick={() => promoteUser && handlePromoteUser(promoteUser, 'admin')} className="w-full py-3 rounded-xl bg-gradient-to-r from-[#e94560] to-[#c23152] text-white font-medium text-sm flex items-center justify-center gap-2"><Shield size={16} /> Promover a Admin</button>
+            <button onClick={() => promoteUser && handlePromoteUser(promoteUser, 'user')} className="w-full py-3 rounded-xl border border-white/20 text-white/60 hover:text-white hover:border-white/30 transition-colors text-sm flex items-center justify-center gap-2"><UserCog size={16} /> Degradar a Usuario</button>
           </div>
         </DialogContent>
       </Dialog>

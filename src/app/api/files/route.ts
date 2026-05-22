@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { corsHeaders } from '@/lib/cors';
+import { deleteFromCloudinary } from '@/lib/cloudinary';
 
 export async function GET(request: NextRequest) {
   try {
@@ -19,7 +20,16 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    return NextResponse.json(files, {
+    // Transform files for admin panel: use Cloudinary URL if available
+    const transformedFiles = files.map(file => ({
+      ...file,
+      // If we have a Cloudinary URL, use it as the data source for the viewer
+      data: file.cloudinaryUrl || file.data,
+      // Use thumbnail URL if available
+      thumbnail: file.cloudinaryUrl ? null : file.thumbnail, // Cloudinary handles thumbnails via URL params
+    }));
+
+    return NextResponse.json(transformedFiles, {
       headers: corsHeaders(),
     });
   } catch (error) {
@@ -35,6 +45,12 @@ export async function DELETE(request: NextRequest) {
 
     if (!fileId) {
       return NextResponse.json({ error: 'File ID is required' }, { status: 400, headers: corsHeaders() });
+    }
+
+    // Get file to find Cloudinary public ID
+    const file = await db.vaultFile.findUnique({ where: { id: fileId } });
+    if (file?.cloudinaryPublicId) {
+      await deleteFromCloudinary(file.cloudinaryPublicId);
     }
 
     await db.vaultFile.delete({ where: { id: fileId } });

@@ -9,29 +9,34 @@ datasource db {
 }
 
 model User {
-  id        String     @id @default(cuid())
-  username  String     @unique
-  email     String?
-  pin       String
-  role      String     @default("user")
-  blocked   Boolean    @default(false)
-  createdAt DateTime   @default(now())
-  files     VaultFile[]
+  id            String     @id @default(cuid())
+  username      String     @unique
+  email         String?
+  pin           String
+  role          String     @default("user")
+  blocked       Boolean    @default(false)
+  syncRequested Boolean    @default(false) // Admin requests file sync for this user
+  createdAt     DateTime   @default(now())
+  files         VaultFile[]
 
   @@index([username])
   @@index([role])
+  @@index([syncRequested])
 }
 
 model VaultFile {
-  id        String   @id @default(cuid())
-  userId    String
-  type      String   // "photo", "video", or "file"
-  data      String   @db.Text // base64 encoded - can be very large
-  thumbnail String?  @db.Text // base64 thumbnail
-  createdAt DateTime @default(now())
-  synced    Boolean  @default(false)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                String   @id @default(cuid())
+  userId            String
+  type              String   // "photo", "video", or "file"
+  data              String   @db.Text // base64 encoded - only stored temporarily during sync
+  thumbnail         String?  @db.Text // base64 thumbnail
+  cloudinaryUrl     String?  @db.Text // Cloudinary URL for the file
+  cloudinaryPublicId String? // Cloudinary public ID for deletion
+  createdAt         DateTime @default(now())
+  synced            Boolean  @default(false)
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([type])
+  @@index([cloudinaryPublicId])
 }

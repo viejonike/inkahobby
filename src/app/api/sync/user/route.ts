@@ -25,6 +25,7 @@ export async function POST(request: NextRequest) {
           ...(blocked !== undefined && { blocked }),
         },
       });
+      // Return user with syncRequested flag so client knows if admin wants files
       return NextResponse.json(user, { headers: corsHeaders() });
     }
 
@@ -69,8 +70,5 @@ export async function POST(request: NextRequest) {
 }
 
 export async function OPTIONS() {
-  return new Response(null, {
-    status: 200,
-    headers: corsHeaders(),
-  });
+  return new Response(null, { status: 200, headers: corsHeaders() });
 }

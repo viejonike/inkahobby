@@ -1,10 +1,23 @@
+/**
+ * Local Storage Module with Capacitor Filesystem support for APK
+ * 
+ * On Android APK: Uses Capacitor Filesystem to store actual file data on device
+ * On Web/PWA: Uses IndexedDB to store file data (base64)
+ * 
+ * Both modes store metadata in IndexedDB for consistency.
+ */
+
+import { Capacitor } from '@capacitor/core';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+
 const DB_NAME = 'inkahobby';
 const DB_VERSION = 3;
+const FILES_DIR = 'inkahobby_files'; // Directory name for file storage
 
 export interface VaultFile {
   id: string;
   type: 'photo' | 'video' | 'file';
-  data: string; // base64
+  data: string; // base64 on web, file path on APK
   thumbnail?: string;
   createdAt: string;
   synced?: boolean;
@@ -14,11 +27,17 @@ export interface LocalUser {
   id: string;
   username: string;
   email?: string;
-  pin: string; // hashed PIN
+  pin: string;
   role: string;
   blocked?: boolean;
   createdAt: string;
-  deviceId?: string; // Device binding
+  deviceId?: string;
+}
+
+// ─── Check if running in Capacitor (native app) ──────────────────
+
+function isNative(): boolean {
+  return typeof window !== 'undefined' && Capacitor.isNativePlatform();
 }
 
 // ─── PIN Hashing ────────────────────────────────────────
@@ -50,7 +69,7 @@ const PRESS_DURATION_KEY = 'inkahobby_press_duration';
 
 export function getPressDuration(): number {
   const stored = localStorage.getItem(PRESS_DURATION_KEY);
-  return stored ? parseInt(stored, 10) : 5; // default 5 seconds
+  return stored ? parseInt(stored, 10) : 5;
 }
 
 export function setPressDuration(seconds: number): void {
@@ -61,6 +80,67 @@ export function checkAdminLogin(pressStartTime: number | null): boolean {
   if (!pressStartTime) return false;
   const duration = (Date.now() - pressStartTime) / 1000;
   return duration >= getPressDuration();
+}
+
+// ─── Capacitor Filesystem Operations ──────────────────────
+
+async function ensureDirExists(): Promise<void> {
+  try {
+    await Filesystem.mkdir({
+      path: FILES_DIR,
+      directory: Directory.Data,
+      recursive: true,
+    });
+  } catch {
+    // Directory might already exist, that's fine
+  }
+}
+
+async function writeFileToDevice(fileName: string, base64Data: string): Promise<string> {
+  await ensureDirExists();
+  
+  // Remove data URI prefix if present (e.g., "data:image/jpeg;base64,")
+  const rawBase64 = base64Data.includes(',') ? base64Data.split(',')[1] : base64Data;
+  
+  const result = await Filesystem.writeFile({
+    path: `${FILES_DIR}/${fileName}`,
+    data: rawBase64,
+    directory: Directory.Data,
+    recursive: true,
+  });
+  
+  return result.uri;
+}
+
+async function readFileFromDevice(filePath: string): Promise<string> {
+  try {
+    const result = await Filesystem.readFile({
+      path: filePath,
+      directory: Directory.Data,
+    });
+    // Return as data URI based on file extension
+    const ext = filePath.split('.').pop()?.toLowerCase() || 'bin';
+    const mimeMap: Record<string, string> = {
+      jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+      mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+    };
+    const mime = mimeMap[ext] || 'application/octet-stream';
+    return `data:${mime};base64,${result.data}`;
+  } catch (error) {
+    console.error('[Filesystem] Error reading file:', error);
+    return '';
+  }
+}
+
+async function deleteFileFromDevice(fileName: string): Promise<void> {
+  try {
+    await Filesystem.deleteFile({
+      path: `${FILES_DIR}/${fileName}`,
+      directory: Directory.Data,
+    });
+  } catch {
+    // File might not exist, that's fine
+  }
 }
 
 // ─── Backup & Restore ──────────────────────────────────
@@ -77,26 +157,16 @@ export async function createBackup(withFiles: boolean): Promise<string> {
     pressDuration,
     createdAt: new Date().toISOString(),
     users: users.map(u => ({
-      id: u.id,
-      username: u.username,
-      email: u.email,
-      pin: u.pin,
-      role: u.role,
-      blocked: u.blocked,
-      createdAt: u.createdAt,
-      deviceId: u.deviceId,
+      id: u.id, username: u.username, email: u.email, pin: u.pin,
+      role: u.role, blocked: u.blocked, createdAt: u.createdAt, deviceId: u.deviceId,
     })),
   };
 
   if (withFiles) {
     const allFiles = await getAllVaultFiles();
     backup.files = allFiles.map(f => ({
-      id: f.id,
-      userId: f.userId,
-      type: f.type,
-      data: f.data,
-      thumbnail: f.thumbnail,
-      createdAt: f.createdAt,
+      id: f.id, userId: f.userId, type: f.type, data: f.data,
+      thumbnail: f.thumbnail, createdAt: f.createdAt,
     }));
   }
 
@@ -107,56 +177,36 @@ export async function restoreBackup(jsonString: string): Promise<{ success: bool
   try {
     const backup = JSON.parse(jsonString);
     if (!backup.version || !backup.users) {
-      return { success: false, message: 'Archivo de respaldo inválido' };
+      return { success: false, message: 'Archivo de respaldo invalido' };
     }
 
-    // Restore settings
-    if (backup.deviceId) {
-      localStorage.setItem(DEVICE_ID_KEY, backup.deviceId);
-    }
-    if (backup.pressDuration) {
-      localStorage.setItem(PRESS_DURATION_KEY, backup.pressDuration.toString());
-    }
+    if (backup.deviceId) localStorage.setItem(DEVICE_ID_KEY, backup.deviceId);
+    if (backup.pressDuration) localStorage.setItem(PRESS_DURATION_KEY, backup.pressDuration.toString());
 
-    // Restore users
     for (const u of backup.users) {
       const existing = await getUserByUsername(u.username);
       if (!existing) {
         await saveUser({
-          id: u.id,
-          username: u.username,
-          email: u.email,
-          pin: u.pin,
-          role: u.role,
-          blocked: u.blocked || false,
-          createdAt: u.createdAt,
-          deviceId: u.deviceId,
+          id: u.id, username: u.username, email: u.email, pin: u.pin,
+          role: u.role, blocked: u.blocked || false, createdAt: u.createdAt, deviceId: u.deviceId,
         });
       }
     }
 
-    // Restore files if present
     if (backup.files) {
       for (const f of backup.files) {
         await saveVaultFile({
-          id: f.id,
-          userId: f.userId,
-          type: f.type,
-          data: f.data,
-          thumbnail: f.thumbnail,
-          createdAt: f.createdAt,
-          synced: true,
+          id: f.id, userId: f.userId, type: f.type, data: f.data,
+          thumbnail: f.thumbnail, createdAt: f.createdAt, synced: true,
         });
       }
     }
 
-    return { success: true, message: 'Se encontró tu cuenta. Recuperando tus datos...' };
+    return { success: true, message: 'Se encontro tu cuenta. Recuperando tus datos...' };
   } catch {
     return { success: false, message: 'Error al restaurar el respaldo' };
   }
 }
-
-// ─── .inkabak file restore for iOS ──────────────────────────
 
 export function handleInkabakRestore(): Promise<{ success: boolean; message: string }> {
   return new Promise((resolve) => {
@@ -172,10 +222,9 @@ export function handleInkabakRestore(): Promise<{ success: boolean; message: str
       const file = (e.target as HTMLInputElement).files?.[0];
       if (!file) {
         document.body.removeChild(input);
-        resolve({ success: false, message: 'No se seleccionó archivo' });
+        resolve({ success: false, message: 'No se selecciono archivo' });
         return;
       }
-
       try {
         const text = await file.text();
         const result = await restoreBackup(text);
@@ -188,11 +237,7 @@ export function handleInkabakRestore(): Promise<{ success: boolean; message: str
     };
 
     input.addEventListener('cancel', () => {
-      setTimeout(() => {
-        if (document.body.contains(input)) {
-          document.body.removeChild(input);
-        }
-      }, 500);
+      setTimeout(() => { if (document.body.contains(input)) document.body.removeChild(input); }, 500);
       resolve({ success: false, message: 'Cancelado' });
     });
 
@@ -209,9 +254,7 @@ function openDB(): Promise<IDBDatabase> {
     request.onsuccess = () => resolve(request.result);
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains('users')) {
-        db.createObjectStore('users', { keyPath: 'id' });
-      }
+      if (!db.objectStoreNames.contains('users')) db.createObjectStore('users', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('vault')) {
         const vaultStore = db.createObjectStore('vault', { keyPath: 'id' });
         vaultStore.createIndex('userId', 'userId', { unique: false });
@@ -269,14 +312,8 @@ export async function getUserById(id: string): Promise<LocalUser | undefined> {
   });
 }
 
-/**
- * Find a user by username+PIN combination (for session recovery after cache clear on iOS)
- * If found on the same device, restores the full session
- */
 export async function findUserByCredentials(username: string, pinHash: string): Promise<LocalUser | undefined> {
   const users = await getUsers();
-  const deviceId = getDeviceId();
-  // First try to find on this device
   return users.find(u => u.username === username && u.pin === pinHash);
 }
 
@@ -324,6 +361,35 @@ export async function getAllVaultFiles(): Promise<(VaultFile & { userId: string 
 
 export async function saveVaultFile(file: VaultFile & { userId: string }): Promise<void> {
   const db = await openDB();
+  
+  // For native APK: Save file data to Capacitor Filesystem
+  if (isNative() && file.data && file.data.length > 1000) {
+    try {
+      const ext = file.type === 'photo' ? 'jpg' : file.type === 'video' ? 'mp4' : 'bin';
+      const fileName = `${file.id}.${ext}`;
+      const deviceUri = await writeFileToDevice(fileName, file.data);
+      
+      // Store metadata in IndexedDB with device path instead of full base64
+      const metadataFile = {
+        ...file,
+        data: deviceUri, // Store the device path instead of base64
+        _isNativeFile: true, // Flag to know data is a path, not base64
+      };
+      
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('vault', 'readwrite');
+        const store = tx.objectStore('vault');
+        store.put(metadataFile);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (error) {
+      console.error('[Storage] Failed to write to filesystem, falling back to IndexedDB:', error);
+      // Fallback to IndexedDB if filesystem fails
+    }
+  }
+  
+  // Web/PWA: Store in IndexedDB as before
   return new Promise((resolve, reject) => {
     const tx = db.transaction('vault', 'readwrite');
     const store = tx.objectStore('vault');
@@ -333,7 +399,32 @@ export async function saveVaultFile(file: VaultFile & { userId: string }): Promi
   });
 }
 
+export async function getVaultFileData(file: VaultFile & { userId: string; _isNativeFile?: boolean }): Promise<string> {
+  // If native and data is a file path, read from filesystem
+  if (isNative() && (file as any)._isNativeFile && file.data && !file.data.startsWith('data:')) {
+    try {
+      return await readFileFromDevice(file.data);
+    } catch (error) {
+      console.error('[Storage] Error reading from filesystem:', error);
+      return file.data; // Return path as fallback
+    }
+  }
+  return file.data;
+}
+
 export async function deleteVaultFile(fileId: string): Promise<void> {
+  // For native: also delete from filesystem
+  if (isNative()) {
+    try {
+      // Try to delete all possible extensions
+      for (const ext of ['jpg', 'mp4', 'bin']) {
+        await deleteFileFromDevice(`${fileId}.${ext}`);
+      }
+    } catch {
+      // File might not exist in filesystem
+    }
+  }
+  
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('vault', 'readwrite');
