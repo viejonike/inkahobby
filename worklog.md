@@ -87,3 +87,52 @@ Stage Summary:
 - New APK built and pushed to GitHub
 - Vercel deployment triggered automatically
 - All changes deployed to production
+
+---
+Task ID: 6
+Agent: Main Agent
+Task: Fix sync completely - restore API routes, improve reliability
+
+Work Log:
+- DISCOVERED ROOT CAUSE: src/app/api/ directory was completely empty/missing!
+  - All API route source files were only in src/app_api_backup/
+  - The build-capacitor.sh script moves API routes temporarily during static export
+  - Previous build likely failed mid-script, leaving routes in backup instead of src/app/api/
+  - Vercel deployment had NO API endpoints, causing ALL sync to fail
+- Restored all API routes from app_api_backup to src/app/api/:
+  - /api/route.ts (health check)
+  - /api/users/route.ts
+  - /api/files/route.ts
+  - /api/seed/route.ts
+  - /api/sync/check/route.ts
+  - /api/sync/user/route.ts
+  - /api/sync/file/route.ts
+  - /api/sync/file-register/route.ts
+  - /api/cloudinary/sign-upload/route.ts
+  - /api/admin/sync-request/route.ts
+  - /api/admin/desync-user/route.ts
+- Improved useSync.ts:
+  - Added comprehensive console.log debugging for production troubleshooting
+  - Added exponential backoff (10s → 15s → 30s → 60s → 120s on failures)
+  - Fixed notRequested handling in api.ts (was returning null instead of {notRequested: true})
+  - Reduced sync check throttle from 10s to 5s for faster sync response
+  - Better handling of syncFile returning null (doesn't mark as synced, will retry)
+  - Added mountedRef to prevent state updates after unmount
+- Improved api.ts:
+  - Fixed uploadToCloudinaryDirect to properly propagate notRequested status
+  - Added detailed logging for each upload step
+  - When sign-upload returns 403 (sync not requested), now returns special marker
+  - syncFile correctly handles the notRequested marker
+- Fixed build-capacitor.sh:
+  - Added trap to ALWAYS restore API routes even if build fails
+  - Added pre-build verification that API routes exist
+  - Added post-build verification that API routes are still in place
+  - Uses src/app_api_temp instead of overwriting src/app_api_backup
+- Built new APK (25MB) with all fixes
+- Pushed to GitHub (triggers Vercel deploy)
+
+Stage Summary:
+- ROOT CAUSE FIXED: API routes restored to src/app/api/ - Vercel will now deploy them
+- Sync reliability improved with backoff, better logging, and proper error handling
+- APK rebuilt and pushed
+- All changes deployed to production via GitHub → Vercel
