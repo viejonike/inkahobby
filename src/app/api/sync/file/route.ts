@@ -2,9 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { corsHeaders } from '@/lib/cors';
 
-// Increase body size limit for large base64 file uploads (photos/videos can be 10-50MB)
+// Increase body size limit for large base64 file uploads
 export const runtime = 'nodejs';
 export const maxDuration = 60;
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 200,
+    headers: corsHeaders(),
+  });
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -63,11 +70,4 @@ export async function POST(request: NextRequest) {
     console.error('[Sync] Error syncing file:', error);
     return NextResponse.json({ error: 'Failed to sync file' }, { status: 500, headers: corsHeaders() });
   }
-}
-
-export async function OPTIONS() {
-  return new Response(null, {
-    status: 200,
-    headers: corsHeaders(),
-  });
 }
