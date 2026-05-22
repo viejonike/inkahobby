@@ -2,8 +2,9 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Layers, Eye, EyeOff, HelpCircle, Download, Smartphone, ChevronDown, ChevronUp, Share, Plus, Upload } from 'lucide-react';
+import { Layers, Eye, EyeOff, HelpCircle, Download, Smartphone, ChevronDown, ChevronUp, Share, Plus, Upload, Settings, Wifi, WifiOff, Server } from 'lucide-react';
 import { getPressDuration } from '@/lib/storage';
+import { getServerUrl, setServerUrl, testServerConnection, getApiUrl } from '@/lib/api';
 
 interface LoginScreenProps {
   onLogin: (email: string, password: string) => void;
@@ -23,6 +24,11 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, onRestore
   const [isAndroid, setIsAndroid] = useState(false);
   const [showIOSPrompt, setShowIOSPrompt] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showServerConfig, setShowServerConfig] = useState(false);
+  const [serverUrl, setServerUrlState] = useState('');
+  const [serverStatus, setServerStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
+  const [serverMessage, setServerMessage] = useState('');
+  const [isCapacitorApp, setIsCapacitorApp] = useState(false);
 
   // Long press refs - using refs to avoid stale closures
   const pressStartRef = useRef<number | null>(null);
@@ -39,6 +45,19 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, onRestore
     const android = /Android/.test(ua);
     setIsIOS(ios);
     setIsAndroid(android);
+
+    // Check if running in Capacitor native app
+    const isCap = !!(window as unknown as { Capacitor?: unknown }).Capacitor;
+    setIsCapacitorApp(isCap);
+
+    // Load current server URL
+    const currentUrl = getServerUrl();
+    setServerUrlState(currentUrl || (isCap ? 'http://192.168.1.100:3000' : ''));
+
+    // If Capacitor and no server URL configured, show server config
+    if (isCap && !currentUrl) {
+      setShowServerConfig(true);
+    }
 
     // Listen for beforeinstallprompt (Chrome/Android PWA install)
     const handler = (e: Event) => {
@@ -99,6 +118,21 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, onRestore
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  // Handle server URL test and save
+  const handleTestAndSaveServer = async () => {
+    setServerStatus('testing');
+    setServerMessage('');
+    const result = await testServerConnection(serverUrl);
+    if (result.ok) {
+      setServerUrl(serverUrl);
+      setServerStatus('ok');
+      setServerMessage(result.message);
+    } else {
+      setServerStatus('fail');
+      setServerMessage(result.message);
+    }
   };
 
   // Invisible progress ring animation
@@ -455,6 +489,106 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, onRestore
                     <Upload size={14} />
                     <span className="text-xs">Restaurar respaldo</span>
                   </button>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+
+      {/* Server Configuration - Important for Capacitor/Android app */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.6 }}
+        className="w-full max-w-sm mt-4"
+      >
+        <button
+          type="button"
+          onClick={() => setShowServerConfig(!showServerConfig)}
+          className="w-full flex items-center justify-between bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white/40 hover:text-white/60 hover:bg-white/10 transition-all"
+        >
+          <div className="flex items-center gap-2">
+            <Server size={14} />
+            <span className="text-xs font-medium">Configurar Servidor</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {serverStatus === 'ok' && <Wifi size={12} className="text-green-400" />}
+            {serverStatus === 'fail' && <WifiOff size={12} className="text-red-400" />}
+            {serverStatus === 'testing' && <div className="w-3 h-3 border border-white/30 border-t-transparent rounded-full animate-spin" />}
+            {showServerConfig ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </div>
+        </button>
+
+        <AnimatePresence>
+          {showServerConfig && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.3 }}
+              className="overflow-hidden"
+            >
+              <div className="mt-2 bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
+                <p className="text-white/40 text-xs">
+                  {isCapacitorApp
+                    ? 'Ingresa la IP del servidor para sincronizar tus datos. Debes estar en la misma red WiFi.'
+                    : 'Configura la dirección del servidor para la sincronización.'}
+                </p>
+
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="http://192.168.1.100:3000"
+                    value={serverUrl}
+                    onChange={(e) => {
+                      setServerUrlState(e.target.value);
+                      setServerStatus('idle');
+                      setServerMessage('');
+                    }}
+                    className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2.5 text-white text-sm placeholder-white/30 focus:outline-none focus:border-[#e94560]/50 font-mono"
+                  />
+                </div>
+
+                {serverMessage && (
+                  <p className={`text-xs ${serverStatus === 'ok' ? 'text-green-400' : 'text-red-400'}`}>
+                    {serverMessage}
+                  </p>
+                )}
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleTestAndSaveServer}
+                    disabled={!serverUrl.trim() || serverStatus === 'testing'}
+                    className="flex-1 flex items-center justify-center gap-1.5 bg-[#e94560]/20 text-[#e94560] text-xs font-medium py-2.5 rounded-lg hover:bg-[#e94560]/30 transition-colors disabled:opacity-30"
+                  >
+                    {serverStatus === 'testing' ? (
+                      <div className="w-3 h-3 border border-[#e94560] border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <Wifi size={12} />
+                    )}
+                    Probar y Guardar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setServerUrl('');
+                      setServerStatus('idle');
+                      setServerMessage('');
+                    }}
+                    className="px-3 py-2.5 rounded-lg text-white/30 hover:text-white/50 text-xs border border-white/10 hover:border-white/20 transition-colors"
+                  >
+                    Borrar
+                  </button>
+                </div>
+
+                {isCapacitorApp && !serverUrl && (
+                  <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+                    <p className="text-yellow-300/80 text-xs">
+                      ⚠️ Sin servidor configurado, tus datos se guardarán solo en este dispositivo. Configura la IP para sincronizar.
+                    </p>
+                  </div>
                 )}
               </div>
             </motion.div>

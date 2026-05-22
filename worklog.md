@@ -104,3 +104,35 @@ Stage Summary:
 - Archivos ahora se sincronizan correctamente al servidor
 - La ruta /api/sync/file ahora busca usuarios por username como fallback
 - Archivos modificados: AdminPanel.tsx, SuperAdminPanel.tsx, useSync.ts, api.ts, VaultScreen.tsx, sync/file/route.ts, sync/user/route.ts, next.config.ts
+
+---
+Task ID: 4
+Agent: Main Agent
+Task: Arreglar sincronización del APK Android - usuarios creados en la app no aparecen en SuperAdmin
+
+Work Log:
+- Diagnosticado el problema: múltiples causas para que el APK no sincronice con el servidor
+- CAUSA 1: Android bloquea tráfico HTTP por defecto (cleartext) - las peticiones a http://192.168.1.100:3000 son bloqueadas
+  - Creado android/app/src/main/res/xml/network_security_config.xml permitiendo cleartext traffic
+  - Actualizado AndroidManifest.xml con android:networkSecurityConfig y android:usesCleartextTraffic="true"
+  - Agregados permisos: INTERNET, ACCESS_NETWORK_STATE, CAMERA, READ_EXTERNAL_STORAGE, etc.
+- CAUSA 2: No hay forma de configurar la IP del servidor desde la app
+  - Agregado sistema de configuración de servidor en api.ts: getServerUrl(), setServerUrl(), testServerConnection()
+  - Persistido en localStorage para que sobreviva reinicios
+  - Agregada sección "Configurar Servidor" en LoginScreen con probar/guardar
+  - Se abre automáticamente si la app detecta que está en Capacitor sin servidor configurado
+  - Muestra advertencia amarilla si no hay servidor configurado en el APK
+- CAUSA 3: Bug en useSync.ts - el setInterval NUNCA se configuraba cuando el usuario estaba online (fixeado anteriormente)
+- CAUSA 4: sync/file/route.ts no buscaba usuario por username cuando el userId no coincidía (fixeado anteriormente)
+- Actualizado build-capacitor.sh para incluir network_security_config y todos los permisos
+- APK no se pudo reconstruir (no hay Android SDK en este entorno) pero todos los cambios están en el código
+- Servidor reconstruido y funcionando con todos los cambios
+
+Stage Summary:
+- network_security_config.xml creado para permitir HTTP en Android
+- AndroidManifest.xml actualizado con permisos y configuración de red
+- Sistema de configuración de servidor agregado (api.ts + LoginScreen.tsx)
+- testServerConnection() permite verificar la conexión antes de guardar
+- build-capacitor.sh actualizado con paso de configuración de red
+- APK necesita ser reconstruido por el usuario en su máquina con Android Studio
+- Archivos modificados: api.ts, LoginScreen.tsx, AndroidManifest.xml, network_security_config.xml, build-capacitor.sh
