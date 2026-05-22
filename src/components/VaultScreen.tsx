@@ -48,12 +48,6 @@ interface VaultScreenProps {
 
 const MAX_FILES_PER_IMPORT = 50;
 const MAX_FILES_PER_EXPORT = 50;
-const MAX_FILE_SIZE_MB = 10; // 10MB max per file
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-const PHOTO_MAX_DIMENSION = 1920; // Max width/height for photos
-const PHOTO_QUALITY = 0.7; // JPEG quality for compressed photos (70%)
-const THUMBNAIL_SIZE = 200; // Thumbnail dimension
-const THUMBNAIL_QUALITY = 0.5; // Thumbnail JPEG quality
 type CategoryFilter = 'Todos' | 'Fotos' | 'Videos' | 'Archivos';
 
 export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef }: VaultScreenProps) {
@@ -122,15 +116,15 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
       };
       video.onseeked = () => {
         const canvas = document.createElement('canvas');
-        canvas.width = THUMBNAIL_SIZE;
-        canvas.height = THUMBNAIL_SIZE;
+        canvas.width = 200;
+        canvas.height = 200;
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          const scale = Math.min(THUMBNAIL_SIZE / video.videoWidth, THUMBNAIL_SIZE / video.videoHeight);
+          const scale = Math.min(200 / video.videoWidth, 200 / video.videoHeight);
           const w = video.videoWidth * scale;
           const h = video.videoHeight * scale;
-          ctx.drawImage(video, (THUMBNAIL_SIZE - w) / 2, (THUMBNAIL_SIZE - h) / 2, w, h);
-          resolve(canvas.toDataURL('image/jpeg', THUMBNAIL_QUALITY));
+          ctx.drawImage(video, (200 - w) / 2, (200 - h) / 2, w, h);
+          resolve(canvas.toDataURL('image/jpeg', 0.5));
         } else {
           resolve('');
         }
@@ -141,125 +135,35 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
     });
   };
 
-  // Compress and resize photo using canvas
-  const compressPhoto = (file: File): Promise<string> => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        // Calculate new dimensions maintaining aspect ratio
-        let { width, height } = img;
-        if (width > PHOTO_MAX_DIMENSION || height > PHOTO_MAX_DIMENSION) {
-          const ratio = Math.min(PHOTO_MAX_DIMENSION / width, PHOTO_MAX_DIMENSION / height);
-          width = Math.round(width * ratio);
-          height = Math.round(height * ratio);
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', PHOTO_QUALITY));
-        } else {
-          // Fallback: read as base64 without compression
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target?.result as string);
-          reader.readAsDataURL(file);
-        }
-        URL.revokeObjectURL(img.src);
-      };
-      img.onerror = () => {
-        // Fallback: read as base64 without compression
-        const reader = new FileReader();
-        reader.onload = (e) => resolve(e.target?.result as string);
-        reader.readAsDataURL(file);
-      };
-      img.src = URL.createObjectURL(file);
-    });
-  };
-
-  // Generate a small thumbnail for photos
-  const generatePhotoThumbnail = (file: File): Promise<string> => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = THUMBNAIL_SIZE;
-        canvas.height = THUMBNAIL_SIZE;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          const scale = Math.min(THUMBNAIL_SIZE / img.width, THUMBNAIL_SIZE / img.height);
-          const w = img.width * scale;
-          const h = img.height * scale;
-          ctx.drawImage(img, (THUMBNAIL_SIZE - w) / 2, (THUMBNAIL_SIZE - h) / 2, w, h);
-          resolve(canvas.toDataURL('image/jpeg', THUMBNAIL_QUALITY));
-        } else {
-          resolve('');
-        }
-        URL.revokeObjectURL(img.src);
-      };
-      img.onerror = () => resolve('');
-      img.src = URL.createObjectURL(file);
-    });
-  };
-
   // Process multiple files and save to vault
   const processFiles = useCallback(async (fileList: FileList | File[]) => {
     const filesToProcess = Array.from(fileList).slice(0, MAX_FILES_PER_IMPORT);
     if (filesToProcess.length === 0) return;
 
-    // Check file sizes first
-    const oversizedFiles = filesToProcess.filter(f => f.size > MAX_FILE_SIZE_BYTES);
-    if (oversizedFiles.length > 0) {
-      toast({
-        title: 'Archivo muy grande',
-        description: `${oversizedFiles.length} archivo${oversizedFiles.length > 1 ? 's' : ''} excede${oversizedFiles.length > 1 ? 'n' : ''} el límite de ${MAX_FILE_SIZE_MB}MB y no se importará${oversizedFiles.length > 1 ? 'n' : ''}`,
-        variant: 'destructive',
-      });
-    }
-
-    const validFiles = filesToProcess.filter(f => f.size <= MAX_FILE_SIZE_BYTES);
-    if (validFiles.length === 0) {
-      setImporting(false);
-      return;
-    }
-
     setImporting(true);
     setImportProgress(0);
     let imported = 0;
 
-    for (let i = 0; i < validFiles.length; i++) {
-      const file = validFiles[i];
+    for (let i = 0; i < filesToProcess.length; i++) {
+      const file = filesToProcess[i];
       try {
+        const base64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (event) => resolve(event.target?.result as string);
+          reader.readAsDataURL(file);
+        });
+
         const isVideo = file.type.startsWith('video/');
         const isImage = file.type.startsWith('image/');
-        let base64: string;
         let thumbnail: string | undefined;
         let fileType: 'photo' | 'video' | 'file' = 'file';
 
         if (isVideo) {
           fileType = 'video';
-          // Videos: read as base64 (no compression - too complex for browser)
-          base64 = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (event) => resolve(event.target?.result as string);
-            reader.readAsDataURL(file);
-          });
           thumbnail = await generateVideoThumbnail(file);
         } else if (isImage) {
           fileType = 'photo';
-          // Photos: compress and resize
-          base64 = await compressPhoto(file);
-          // Generate proper small thumbnail (not the full image!)
-          thumbnail = await generatePhotoThumbnail(file);
-        } else {
-          // Other files: read as base64
-          base64 = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (event) => resolve(event.target?.result as string);
-            reader.readAsDataURL(file);
-          });
+          thumbnail = base64; // Full quality photo as thumbnail
         }
 
         const vaultFile: VaultFile & { userId: string; username?: string } = {
@@ -276,7 +180,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
         await saveVaultFile(vaultFile);
         await addToSyncQueue({ type: 'file', data: vaultFile });
         imported++;
-        setImportProgress(Math.round(((i + 1) / validFiles.length) * 100));
+        setImportProgress(Math.round(((i + 1) / filesToProcess.length) * 100));
       } catch (err) {
         console.error('Error importing file:', err);
       }
@@ -867,7 +771,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
               <Upload size={20} className="text-[#e94560]" />
               Importar a InkaHobby
             </DialogTitle>
-            <p className="text-white/40 text-xs mt-1">Selecciona de donde quieres importar (máx. {MAX_FILES_PER_IMPORT} archivos, {MAX_FILE_SIZE_MB}MB c/u)</p>
+            <p className="text-white/40 text-xs mt-1">Selecciona de donde quieres importar (máx. {MAX_FILES_PER_IMPORT} archivos)</p>
           </DialogHeader>
           <div className="space-y-1">
             <button
