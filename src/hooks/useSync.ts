@@ -21,7 +21,7 @@ export function useSync() {
   const lastSyncCheckRef = useRef(0);
 
   /**
-   * Main sync process - completely rewritten for reliability
+   * Main sync process - rewritten for maximum reliability
    * 
    * Flow:
    * 1. Sync user data to server (so server knows this user exists)
@@ -49,13 +49,18 @@ export function useSync() {
 
       // ─── Step 1: Sync user to server ──────────────────────
       // Make sure the server knows this user exists
+      let serverUserId = currentUser.id;
       try {
         const deviceId = typeof window !== 'undefined' ? localStorage.getItem('inkahobby_device_id') || '' : '';
         const result = await syncUser({ ...currentUser, deviceId } as LocalUser & { deviceId: string });
         if (result) {
-          const serverUser = result as { syncRequested?: boolean };
+          const serverUser = result as { syncRequested?: boolean; id?: string };
           if (serverUser.syncRequested) {
             syncRequestedRef.current = true;
+          }
+          // Track the server-side user ID for file registration
+          if (serverUser.id) {
+            serverUserId = serverUser.id;
           }
         }
       } catch (err) {
@@ -171,9 +176,23 @@ export function useSync() {
             continue;
           }
 
+          // Determine if data is base64 data URI or raw base64
+          // For Cloudinary upload, we need the full data URI (data:image/...;base64,...)
+          // If the data doesn't start with 'data:', try to construct a data URI
+          if (!fileData.startsWith('data:')) {
+            // Raw base64 or file path that wasn't read correctly
+            const ext = fileData.split('.').pop()?.toLowerCase() || '';
+            const mimeMap: Record<string, string> = {
+              jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+              mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', bin: 'application/octet-stream',
+            };
+            const mime = mimeMap[ext] || 'application/octet-stream';
+            fileData = `data:${mime};base64,${fileData}`;
+          }
+
           const payload = {
             id: file.id,
-            userId: file.userId,
+            userId: serverUserId, // Use the server-side user ID for correct file association
             username: currentUser.username,
             type: file.type,
             data: fileData,
@@ -231,8 +250,8 @@ export function useSync() {
       processQueue();
     }, 2000);
 
-    // Set up interval for periodic sync (every 15 seconds)
-    syncIntervalRef.current = setInterval(processQueue, 15000);
+    // Set up interval for periodic sync (every 10 seconds for faster sync)
+    syncIntervalRef.current = setInterval(processQueue, 10000);
 
     // Sync when coming back online
     const handleOnline = () => {
@@ -251,10 +270,8 @@ export function useSync() {
     // Sync when app becomes visible (user opens the app)
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        // Small delay to let the app render
-        setTimeout(() => {
-          processQueue();
-        }, 500);
+        // Immediate sync when user opens the app
+        processQueue();
       }
     };
 

@@ -24,6 +24,7 @@ import {
   createBackup,
   restoreBackup,
   handleInkabakRestore,
+  autoBackup,
 } from '@/lib/storage';
 import { syncUser, getApiUrl } from '@/lib/api';
 import type { LocalUser } from '@/lib/storage';
@@ -133,6 +134,13 @@ export default function HomePage() {
     return () => clearTimeout(timer);
   }, [processQueue]);
 
+  // Auto-backup on vault entry (runs once per day max)
+  useEffect(() => {
+    if (screen === 'vault' && currentUser) {
+      autoBackup().catch(() => {});
+    }
+  }, [screen, currentUser]);
+
   // Auto-lock: detect when app goes to background and comes back
   const wasHiddenRef = useRef(false);
   const hiddenScreenRef = useRef<Screen>('login');
@@ -154,9 +162,9 @@ export default function HomePage() {
         // Only auto-lock if:
         // 1. User is not currently exporting (file picker open)
         // 2. We were on a sensitive screen
-        // 3. The app was hidden for more than 30 seconds (brief background trips don't lock)
-        // This allows sync to work when user briefly backgrounds the app
-        if (!isExportingRef.current && timeHidden > 30000 && ['vault', 'admin', 'superadmin', 'pin', 'registration'].includes(prevScreen)) {
+        // 3. The app was hidden for more than 5 minutes (allows sync to continue)
+        // IMPORTANT: Keep this long enough so sync can complete while the app is backgrounded
+        if (!isExportingRef.current && timeHidden > 5 * 60 * 1000 && ['vault', 'admin', 'superadmin', 'pin', 'registration'].includes(prevScreen)) {
           logoutUser().then(() => {
             setCurrentUserState(null);
             setLocalUserForPin(null);

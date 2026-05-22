@@ -60,9 +60,11 @@ async function uploadToCloudinaryDirect(
 
     if (!signRes.ok) {
       const errData = await signRes.json().catch(() => ({}));
-      if (errData.notRequested || errData.error?.includes('not requested')) {
-        return null; // Will be handled as notRequested
+      if (errData.notRequested || errData.error?.includes('not requested') || errData.error?.includes('Sync not requested')) {
+        console.log('[API] Admin no longer requests sync. Stopping direct upload.');
+        return null; // Will be handled as notRequested by caller
       }
+      console.error('[API] Sign upload failed:', signRes.status, errData);
       throw new Error(`Sign upload failed: ${signRes.status}`);
     }
 
@@ -151,31 +153,11 @@ export async function syncUser(user: LocalUser & { deviceId?: string }): Promise
   }
 }
 
-export async function syncFile(file: VaultFile & { userId: string; username?: string }): Promise<unknown> {
+export async function syncFile(file: VaultFile & { userId: string; username?: string; pin?: string }): Promise<unknown> {
   try {
-    // First, sync the user to get the server user ID
-    const userRes = await fetch(getApiUrl('/api/sync/user'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: file.username,
-        deviceId: getDeviceId(),
-      }),
-    });
-
-    let serverUserId = file.userId;
-    if (userRes.ok) {
-      const userData = await userRes.json();
-      serverUserId = userData.id;
-      
-      // Check if sync is not requested
-      if (!userData.syncRequested) {
-        return { notRequested: true };
-      }
-    }
-
     // Try direct Cloudinary upload first (bypasses Vercel 4.5MB limit)
-    const directResult = await uploadToCloudinaryDirect(file, serverUserId);
+    // This also validates the user via username in the sign-upload request
+    const directResult = await uploadToCloudinaryDirect(file, file.userId);
     if (directResult) {
       return { 
         id: file.id, 
@@ -201,6 +183,9 @@ export async function syncFile(file: VaultFile & { userId: string; username?: st
       if (errorData.needsRetry) {
         console.warn('[API] File sync deferred - user not yet on server');
         return null;
+      }
+      if (errorData.notRequested) {
+        return { notRequested: true };
       }
       console.error('[API] Sync file failed:', res.status, errorData);
       throw new Error(`Sync file failed: ${res.status}`);

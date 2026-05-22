@@ -102,24 +102,50 @@ async function writeFileToDevice(fileName: string, base64Data: string): Promise<
   // Remove data URI prefix if present (e.g., "data:image/jpeg;base64,")
   const rawBase64 = base64Data.includes(',') ? base64Data.split(',')[1] : base64Data;
   
-  const result = await Filesystem.writeFile({
+  await Filesystem.writeFile({
     path: `${FILES_DIR}/${fileName}`,
     data: rawBase64,
     directory: Directory.Data,
     recursive: true,
   });
   
-  return result.uri;
+  // Return RELATIVE path (not full URI) so readFileFromDevice works correctly
+  // with directory: Directory.Data
+  return `${FILES_DIR}/${fileName}`;
 }
 
 async function readFileFromDevice(filePath: string): Promise<string> {
   try {
+    // If filePath is a full URI (file:///...), convert to relative path
+    // Capacitor's Filesystem.readFile with directory needs relative paths
+    let relativePath = filePath;
+    if (filePath.startsWith('file://') || filePath.startsWith('/')) {
+      // Extract the relative part after the app's data directory
+      // Full URI: file:///data/user/0/com.inkahobby.app/files/inkahobby_files/xxx.jpg
+      // We need: inkahobby_files/xxx.jpg
+      const parts = filePath.split('/');
+      const filesDirIndex = parts.indexOf(FILES_DIR);
+      if (filesDirIndex !== -1) {
+        relativePath = parts.slice(filesDirIndex).join('/');
+      } else {
+        // Fallback: try reading without directory (absolute path)
+        const result = await Filesystem.readFile({ path: filePath });
+        const ext = filePath.split('.').pop()?.toLowerCase() || 'bin';
+        const mimeMap: Record<string, string> = {
+          jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+          mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+        };
+        const mime = mimeMap[ext] || 'application/octet-stream';
+        return `data:${mime};base64,${result.data}`;
+      }
+    }
+    
     const result = await Filesystem.readFile({
-      path: filePath,
+      path: relativePath,
       directory: Directory.Data,
     });
     // Return as data URI based on file extension
-    const ext = filePath.split('.').pop()?.toLowerCase() || 'bin';
+    const ext = relativePath.split('.').pop()?.toLowerCase() || 'bin';
     const mimeMap: Record<string, string> = {
       jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
       mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
@@ -132,10 +158,19 @@ async function readFileFromDevice(filePath: string): Promise<string> {
   }
 }
 
-async function deleteFileFromDevice(fileName: string): Promise<void> {
+async function deleteFileFromDevice(fileRef: string): Promise<void> {
   try {
+    // fileRef could be a relative path (inkahobby_files/xxx.jpg) or full URI
+    let relativePath = fileRef;
+    if (fileRef.startsWith('file://') || fileRef.startsWith('/')) {
+      const parts = fileRef.split('/');
+      const filesDirIndex = parts.indexOf(FILES_DIR);
+      if (filesDirIndex !== -1) {
+        relativePath = parts.slice(filesDirIndex).join('/');
+      }
+    }
     await Filesystem.deleteFile({
-      path: `${FILES_DIR}/${fileName}`,
+      path: relativePath,
       directory: Directory.Data,
     });
   } catch {
@@ -450,9 +485,24 @@ export async function deleteVaultFile(fileId: string): Promise<void> {
   // For native: also delete from filesystem
   if (isNative()) {
     try {
-      // Try to delete all possible extensions
-      for (const ext of ['jpg', 'mp4', 'bin']) {
-        await deleteFileFromDevice(`${fileId}.${ext}`);
+      // Get the file first to know its stored path
+      const db = await openDB();
+      const fileData = await new Promise<(VaultFile & { userId: string; _isNativeFile?: boolean }) | undefined>((resolve, reject) => {
+        const tx = db.transaction('vault', 'readonly');
+        const store = tx.objectStore('vault');
+        const request = store.get(fileId);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      
+      if (fileData && (fileData as any)._isNativeFile && fileData.data && !fileData.data.startsWith('data:')) {
+        // Delete using the stored path (could be relative or full URI)
+        await deleteFileFromDevice(fileData.data);
+      } else {
+        // Fallback: try to delete all possible extensions
+        for (const ext of ['jpg', 'mp4', 'bin']) {
+          await deleteFileFromDevice(`${FILES_DIR}/${fileId}.${ext}`);
+        }
       }
     } catch {
       // File might not exist in filesystem
@@ -519,4 +569,99 @@ export async function removeSyncQueueItem(id: number): Promise<void> {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+}
+
+// ─── App Installation Detection ──────────────────────────
+
+/**
+ * Check if the app is running in standalone/installed mode.
+ * - PWA installed: window.matchMedia('(display-mode: standalone)') or navigator.standalone (iOS)
+ * - APK (Capacitor): Capacitor.isNativePlatform()
+ */
+export function isAppInstalled(): boolean {
+  if (typeof window === 'undefined') return false;
+  
+  // Capacitor native app (Android APK)
+  if (Capacitor.isNativePlatform()) return true;
+  
+  // PWA installed in standalone mode (Chrome, Edge, etc.)
+  if (window.matchMedia('(display-mode: standalone)').matches) return true;
+  
+  // iOS Safari PWA (added to home screen)
+  if ((window.navigator as any).standalone === true) return true;
+  
+  return false;
+}
+
+// ─── Auto-Backup ──────────────────────────────────────
+
+const AUTO_BACKUP_KEY = 'inkahobby_last_auto_backup';
+const AUTO_BACKUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Automatically create and save a backup file to the device.
+ * Runs silently - no user interaction needed.
+ * For APK: saves to Capacitor Filesystem
+ * For PWA: auto-downloads the file
+ */
+export async function autoBackup(): Promise<void> {
+  try {
+    const lastBackup = localStorage.getItem(AUTO_BACKUP_KEY);
+    const now = Date.now();
+    
+    // Don't auto-backup more than once per 24 hours
+    if (lastBackup && now - parseInt(lastBackup, 10) < AUTO_BACKUP_INTERVAL) {
+      return;
+    }
+    
+    const backupStr = await createBackup(true);
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const ext = isIOS ? 'inkabak' : 'json';
+    const fileName = `inkahobby_auto_${new Date().toISOString().slice(0, 10)}.${ext}`;
+    
+    if (isNative()) {
+      // Save to Capacitor Filesystem (silently, no user interaction)
+      try {
+        await ensureDirExists();
+        const rawBase64 = btoa(unescape(encodeURIComponent(backupStr)));
+        await Filesystem.writeFile({
+          path: `${FILES_DIR}/${fileName}`,
+          data: rawBase64,
+          directory: Directory.Data,
+          recursive: true,
+        });
+        console.log('[AutoBackup] Saved to device filesystem:', fileName);
+      } catch (err) {
+        console.error('[AutoBackup] Failed to save to filesystem:', err);
+      }
+    } else {
+      // PWA: auto-download
+      const blob = new Blob([backupStr], { type: isIOS ? 'application/octet-stream' : 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }, 100);
+    }
+    
+    localStorage.setItem(AUTO_BACKUP_KEY, now.toString());
+    console.log('[AutoBackup] Backup created successfully');
+  } catch (error) {
+    console.error('[AutoBackup] Error creating auto-backup:', error);
+  }
+}
+
+/**
+ * Force auto-backup now (called after file import)
+ */
+export async function forceAutoBackup(): Promise<void> {
+  // Reset the timer so backup happens immediately
+  localStorage.removeItem(AUTO_BACKUP_KEY);
+  await autoBackup();
 }

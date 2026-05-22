@@ -35,6 +35,7 @@ import {
   getPressDuration,
   setPressDuration,
   createBackup,
+  forceAutoBackup,
 } from '@/lib/storage';
 import { toast } from '@/hooks/use-toast';
 import GalleryViewer from './GalleryViewer';
@@ -195,6 +196,11 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
       setImportSuccess(false);
       setImportCount(0);
     }, 4000);
+
+    // Auto-backup after importing files
+    if (imported > 0) {
+      forceAutoBackup().catch(err => console.error('[Vault] Auto-backup failed:', err));
+    }
   }, [user.id, loadFiles]);
 
   // File input helper for mobile compatibility
@@ -937,9 +943,9 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
           <div className="space-y-6 mt-4">
             {/* Press Duration */}
             <div>
-              <p className="text-white/70 text-sm mb-1">Tiempo de presión para ayuda</p>
+              <p className="text-white/70 text-sm mb-1">Tiempo de presion para ayuda</p>
               <p className="text-white/30 text-xs mb-3">
-                Elige cuántos segundos debes mantener presionado el botón de ayuda para acceder
+                Elige cuantos segundos debes mantener presionado el boton de ayuda para acceder
               </p>
               <div className="flex items-center gap-3">
                 {[5, 8, 10].map((seconds) => (
@@ -961,11 +967,11 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
               </div>
             </div>
 
-            {/* Backup */}
+            {/* Manual Backup (still available for users who want it) */}
             <div>
-              <p className="text-white/70 text-sm mb-1">Respaldo</p>
+              <p className="text-white/70 text-sm mb-1">Respaldo manual</p>
               <p className="text-white/30 text-xs mb-3">
-                Guarda un archivo de respaldo en tu dispositivo para recuperar tu cuenta si pierdes acceso.
+                Tu galeria se respalda automaticamente. Usa estos botones solo si necesitas un respaldo adicional.
               </p>
               <div className="space-y-2">
                 <button
@@ -984,7 +990,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
                 >
                   <div className="flex items-center gap-3">
                     <Shield size={18} className="text-white/50" />
-                    <span className="text-white text-sm">Respaldo rápido (solo sesión)</span>
+                    <span className="text-white text-sm">Respaldo rapido (solo sesion)</span>
                   </div>
                   <ChevronRight size={16} className="text-white/30" />
                 </button>

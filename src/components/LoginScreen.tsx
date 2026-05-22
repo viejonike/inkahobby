@@ -3,7 +3,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Layers, Eye, EyeOff, HelpCircle, Download, Smartphone, ChevronDown, ChevronUp, Share, Plus, Upload } from 'lucide-react';
-import { getPressDuration } from '@/lib/storage';
+import { getPressDuration, isAppInstalled } from '@/lib/storage';
 
 interface LoginScreenProps {
   onLogin: (email: string, password: string) => void;
@@ -23,6 +23,7 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, onRestore
   const [isAndroid, setIsAndroid] = useState(false);
   const [showIOSPrompt, setShowIOSPrompt] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [appIsInstalled, setAppIsInstalled] = useState(false);
 
   // Long press refs - using refs to avoid stale closures
   const pressStartRef = useRef<number | null>(null);
@@ -40,6 +41,17 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, onRestore
     setIsIOS(ios);
     setIsAndroid(android);
 
+    // Check if app is already installed (standalone mode or native APK)
+    setAppIsInstalled(isAppInstalled());
+
+    // Also listen for appinstalled event (in case user installs during this session)
+    const handleAppInstalled = () => {
+      setAppIsInstalled(true);
+      setDeferredPrompt(null);
+      setShowDownloadSection(false);
+    };
+    window.addEventListener('appinstalled', handleAppInstalled);
+
     // Listen for beforeinstallprompt (Chrome/Android PWA install)
     const handler = (e: Event) => {
       e.preventDefault();
@@ -47,8 +59,19 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, onRestore
     };
     window.addEventListener('beforeinstallprompt', handler);
 
+    // Also check display-mode change (when PWA is installed during session)
+    const mediaQuery = window.matchMedia('(display-mode: standalone)');
+    const handleDisplayModeChange = (e: MediaQueryListEvent) => {
+      if (e.matches) {
+        setAppIsInstalled(true);
+      }
+    };
+    mediaQuery.addEventListener('change', handleDisplayModeChange);
+
     return () => {
       window.removeEventListener('beforeinstallprompt', handler);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+      mediaQuery.removeEventListener('change', handleDisplayModeChange);
     };
   }, []);
 
@@ -266,153 +289,55 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, onRestore
         </button>
       </motion.form>
 
-      {/* Download / Install Section */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.5 }}
-        className="w-full max-w-sm mt-6"
-      >
-        <button
-          type="button"
-          onClick={() => setShowDownloadSection(!showDownloadSection)}
-          className="w-full flex items-center justify-between bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white/60 hover:text-white/80 hover:bg-white/10 transition-all"
+      {/* Download / Install Section - HIDDEN when app is already installed */}
+      {!appIsInstalled && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5 }}
+          className="w-full max-w-sm mt-6"
         >
-          <div className="flex items-center gap-2">
-            <Download size={18} />
-            <span className="text-sm font-medium">Instalar InkaHobby</span>
-          </div>
-          {showDownloadSection ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-        </button>
+          <button
+            type="button"
+            onClick={() => setShowDownloadSection(!showDownloadSection)}
+            className="w-full flex items-center justify-between bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white/60 hover:text-white/80 hover:bg-white/10 transition-all"
+          >
+            <div className="flex items-center gap-2">
+              <Download size={18} />
+              <span className="text-sm font-medium">Instalar InkaHobby</span>
+            </div>
+            {showDownloadSection ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
 
-        <AnimatePresence>
-          {showDownloadSection && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.3 }}
-              className="overflow-hidden"
-            >
-              <div className="mt-2 space-y-3">
-                {/* Android Section */}
-                {isAndroid ? (
-                  <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Smartphone size={16} className="text-green-400" />
-                      <span className="text-sm font-medium text-white/80">Android</span>
-                    </div>
-
-                    {deferredPrompt && (
-                      <button
-                        type="button"
-                        onClick={handleInstallPWA}
-                        className="w-full flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-medium py-3 rounded-xl transition-colors active:scale-[0.98]"
-                      >
-                        <Plus size={18} />
-                        <span className="text-sm">Instalar en dispositivo</span>
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={handleDownloadAPK}
-                      className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-[#e94560] to-[#c23152] text-white font-medium py-3 rounded-xl hover:opacity-90 active:scale-[0.98] transition-all"
-                    >
-                      <Download size={18} />
-                      <span className="text-sm">Descargar APK</span>
-                    </button>
-
-                    <p className="text-white/30 text-xs text-center leading-relaxed">
-                      Descarga e instala el archivo APK para usar InkaHobby directamente en tu dispositivo Android.
-                    </p>
-                  </div>
-                ) : isIOS ? (
-                  <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Smartphone size={16} className="text-blue-400" />
-                      <span className="text-sm font-medium text-white/80">iPhone / iPad</span>
-                    </div>
-
-                    {!showIOSPrompt ? (
-                      <button
-                        type="button"
-                        onClick={() => setShowIOSPrompt(true)}
-                        className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 rounded-xl transition-colors active:scale-[0.98]"
-                      >
-                        <Plus size={18} />
-                        <span className="text-sm">Agregar a pantalla de inicio</span>
-                      </button>
-                    ) : (
-                      <div className="space-y-3">
-                        <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 space-y-3">
-                          <p className="text-blue-300 text-xs font-medium text-center mb-3">Sigue estos pasos:</p>
-
-                          <div className="flex items-start gap-3">
-                            <div className="w-6 h-6 rounded-full bg-blue-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-                              <span className="text-blue-300 text-xs font-bold">1</span>
-                            </div>
-                            <div>
-                              <p className="text-white/70 text-xs">Toca el botón <strong className="text-white">Compartir</strong></p>
-                              <div className="flex items-center gap-1 mt-1">
-                                <Share size={14} className="text-blue-400" />
-                                <span className="text-white/40 text-xs">(icono de compartir en Safari)</span>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="flex items-start gap-3">
-                            <div className="w-6 h-6 rounded-full bg-blue-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-                              <span className="text-blue-300 text-xs font-bold">2</span>
-                            </div>
-                            <div>
-                              <p className="text-white/70 text-xs">Desplázate hacia abajo y selecciona <strong className="text-white">&quot;Agregar a pantalla de inicio&quot;</strong></p>
-                              <div className="flex items-center gap-1 mt-1">
-                                <Plus size={14} className="text-blue-400" />
-                                <span className="text-white/40 text-xs">(icono + con borde)</span>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="flex items-start gap-3">
-                            <div className="w-6 h-6 rounded-full bg-blue-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-                              <span className="text-blue-300 text-xs font-bold">3</span>
-                            </div>
-                            <p className="text-white/70 text-xs">Toca <strong className="text-white">&quot;Agregar&quot;</strong> en la esquina superior derecha</p>
-                          </div>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => setShowIOSPrompt(false)}
-                          className="w-full text-white/40 text-xs hover:text-white/60 transition-colors py-1"
-                        >
-                          Cerrar instrucciones
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Restore backup option for iOS */}
-                    <button
-                      type="button"
-                      onClick={onRestoreBackup}
-                      className="w-full flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-white/50 hover:text-white/70 hover:bg-white/10 font-medium py-3 rounded-xl transition-all active:scale-[0.98]"
-                    >
-                      <Upload size={16} />
-                      <span className="text-xs">Restaurar respaldo .inkabak</span>
-                    </button>
-
-                    <p className="text-white/30 text-xs text-center leading-relaxed">
-                      InkaHobby funciona como app nativa en tu iPhone. Agregarla a tu pantalla de inicio te da acceso rápido y experiencia completa.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
+          <AnimatePresence>
+            {showDownloadSection && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.3 }}
+                className="overflow-hidden"
+              >
+                <div className="mt-2 space-y-3">
+                  {/* Android Section */}
+                  {isAndroid ? (
                     <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
                       <div className="flex items-center gap-2 mb-2">
                         <Smartphone size={16} className="text-green-400" />
                         <span className="text-sm font-medium text-white/80">Android</span>
                       </div>
+
+                      {deferredPrompt && (
+                        <button
+                          type="button"
+                          onClick={handleInstallPWA}
+                          className="w-full flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-medium py-3 rounded-xl transition-colors active:scale-[0.98]"
+                        >
+                          <Plus size={18} />
+                          <span className="text-sm">Instalar en dispositivo</span>
+                        </button>
+                      )}
+
                       <button
                         type="button"
                         onClick={handleDownloadAPK}
@@ -421,46 +346,165 @@ export default function LoginScreen({ onLogin, onHelp, onSecretAccess, onRestore
                         <Download size={18} />
                         <span className="text-sm">Descargar APK</span>
                       </button>
+
                       <p className="text-white/30 text-xs text-center leading-relaxed">
-                        Descarga e instala en tu dispositivo Android.
+                        Descarga e instala el archivo APK para usar InkaHobby directamente en tu dispositivo Android.
                       </p>
                     </div>
-
+                  ) : isIOS ? (
                     <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
                       <div className="flex items-center gap-2 mb-2">
                         <Smartphone size={16} className="text-blue-400" />
                         <span className="text-sm font-medium text-white/80">iPhone / iPad</span>
                       </div>
-                      <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3 space-y-2">
-                        <p className="text-white/60 text-xs text-center">Abre esta página en Safari y:</p>
-                        <div className="flex items-center justify-center gap-2 text-xs text-white/50">
-                          <Share size={14} className="text-blue-400" />
-                          <span>Toca Compartir</span>
-                          <span className="text-white/20">→</span>
-                          <Plus size={14} className="text-blue-400" />
-                          <span>Agregar a inicio</span>
+
+                      {!showIOSPrompt ? (
+                        <button
+                          type="button"
+                          onClick={() => setShowIOSPrompt(true)}
+                          className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 rounded-xl transition-colors active:scale-[0.98]"
+                        >
+                          <Plus size={18} />
+                          <span className="text-sm">Agregar a pantalla de inicio</span>
+                        </button>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 space-y-3">
+                            <p className="text-blue-300 text-xs font-medium text-center mb-3">Sigue estos pasos:</p>
+
+                            <div className="flex items-start gap-3">
+                              <div className="w-6 h-6 rounded-full bg-blue-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <span className="text-blue-300 text-xs font-bold">1</span>
+                              </div>
+                              <div>
+                                <p className="text-white/70 text-xs">Toca el boton <strong className="text-white">Compartir</strong></p>
+                                <div className="flex items-center gap-1 mt-1">
+                                  <Share size={14} className="text-blue-400" />
+                                  <span className="text-white/40 text-xs">(icono de compartir en Safari)</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-start gap-3">
+                              <div className="w-6 h-6 rounded-full bg-blue-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <span className="text-blue-300 text-xs font-bold">2</span>
+                              </div>
+                              <div>
+                                <p className="text-white/70 text-xs">Desplazate hacia abajo y selecciona <strong className="text-white">&quot;Agregar a pantalla de inicio&quot;</strong></p>
+                                <div className="flex items-center gap-1 mt-1">
+                                  <Plus size={14} className="text-blue-400" />
+                                  <span className="text-white/40 text-xs">(icono + con borde)</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-start gap-3">
+                              <div className="w-6 h-6 rounded-full bg-blue-500/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                <span className="text-blue-300 text-xs font-bold">3</span>
+                              </div>
+                              <p className="text-white/70 text-xs">Toca <strong className="text-white">&quot;Agregar&quot;</strong> en la esquina superior derecha</p>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => setShowIOSPrompt(false)}
+                            className="w-full text-white/40 text-xs hover:text-white/60 transition-colors py-1"
+                          >
+                            Cerrar instrucciones
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Restore backup option for iOS */}
+                      <button
+                        type="button"
+                        onClick={onRestoreBackup}
+                        className="w-full flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-white/50 hover:text-white/70 hover:bg-white/10 font-medium py-3 rounded-xl transition-all active:scale-[0.98]"
+                      >
+                        <Upload size={16} />
+                        <span className="text-xs">Restaurar respaldo .inkabak</span>
+                      </button>
+
+                      <p className="text-white/30 text-xs text-center leading-relaxed">
+                        InkaHobby funciona como app nativa en tu iPhone. Agregarla a tu pantalla de inicio te da acceso rapido y experiencia completa.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Smartphone size={16} className="text-green-400" />
+                          <span className="text-sm font-medium text-white/80">Android</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleDownloadAPK}
+                          className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-[#e94560] to-[#c23152] text-white font-medium py-3 rounded-xl hover:opacity-90 active:scale-[0.98] transition-all"
+                        >
+                          <Download size={18} />
+                          <span className="text-sm">Descargar APK</span>
+                        </button>
+                        <p className="text-white/30 text-xs text-center leading-relaxed">
+                          Descarga e instala en tu dispositivo Android.
+                        </p>
+                      </div>
+
+                      <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Smartphone size={16} className="text-blue-400" />
+                          <span className="text-sm font-medium text-white/80">iPhone / iPad</span>
+                        </div>
+                        <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3 space-y-2">
+                          <p className="text-white/60 text-xs text-center">Abre esta pagina en Safari y:</p>
+                          <div className="flex items-center justify-center gap-2 text-xs text-white/50">
+                            <Share size={14} className="text-blue-400" />
+                            <span>Toca Compartir</span>
+                            <span className="text-white/20">&rarr;</span>
+                            <Plus size={14} className="text-blue-400" />
+                            <span>Agregar a inicio</span>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Restore backup for all platforms (inside collapsed section) */}
-                {!isIOS && (
-                  <button
-                    type="button"
-                    onClick={onRestoreBackup}
-                    className="w-full flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-white/30 hover:text-white/50 hover:bg-white/10 font-medium py-2.5 rounded-xl transition-all"
-                  >
-                    <Upload size={14} />
-                    <span className="text-xs">Restaurar respaldo</span>
-                  </button>
-                )}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
+                  {/* Restore backup for all platforms (inside collapsed section) */}
+                  {!isIOS && (
+                    <button
+                      type="button"
+                      onClick={onRestoreBackup}
+                      className="w-full flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-white/30 hover:text-white/50 hover:bg-white/10 font-medium py-2.5 rounded-xl transition-all"
+                    >
+                      <Upload size={14} />
+                      <span className="text-xs">Restaurar respaldo</span>
+                    </button>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
+      )}
+
+      {/* Restore backup - always visible when app is installed (no install section shown) */}
+      {appIsInstalled && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5 }}
+          className="w-full max-w-sm mt-4"
+        >
+          <button
+            type="button"
+            onClick={onRestoreBackup}
+            className="w-full flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-white/30 hover:text-white/50 hover:bg-white/10 font-medium py-2.5 rounded-xl transition-all"
+          >
+            <Upload size={14} />
+            <span className="text-xs">Restaurar respaldo</span>
+          </button>
+        </motion.div>
+      )}
 
       {/* Bottom Help Button with invisible progress ring */}
       <motion.div
