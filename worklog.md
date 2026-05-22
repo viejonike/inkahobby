@@ -70,3 +70,36 @@ Stage Summary:
 - Server API fully functional: sync request, file upload to Cloudinary, desync/delete cloud files
 - Two critical bugs fixed in useSync.ts
 - Production URL: https://my-project-two-tau-92.vercel.app
+---
+Task ID: 2
+Agent: Main Agent
+Task: Fix sync system - files never arriving, add background sync
+
+Work Log:
+- Identified 3 critical bugs in sync system:
+  1. useSync returned early if syncQueue was empty, never checking server for syncRequested
+  2. Files relied only on syncQueue (populated at import time) instead of reading ALL vault files
+  3. No background sync - only worked when user was actively in the app
+- Completely rewrote useSync.ts with new flow:
+  1. Always sync user data first
+  2. Always check server for syncRequested (even when queue empty)
+  3. When syncRequested=true, read ALL local vault files and upload unsynced ones
+  4. Mark files as synced locally after successful upload (markVaultFileSynced)
+  5. Reset sync status when admin desyncs (resetAllVaultSyncStatus)
+- Added direct Cloudinary upload (bypasses Vercel 4.5MB body limit):
+  - New API: /api/cloudinary/sign-upload (generates signed params)
+  - New API: /api/sync/file-register (registers file in DB after direct upload)
+  - Client gets signed params → uploads directly to Cloudinary → registers in DB
+- Added Service Worker Background Sync:
+  - sw.js now handles 'sync' events
+  - Listens for messages from client to register background sync
+  - Client listens for 'inkahobby-sync' custom events
+- Added visibility change listener in useSync (syncs when app becomes visible)
+- Fixed auto-lock: 30-second grace period before locking (prevents locking during brief background trips for sync)
+- End-to-end test passed: Create user → Sync → Upload to Cloudinary → Admin sees files → Desync → Cloud files deleted
+
+Stage Summary:
+- Sync system fully rewritten and working
+- Direct Cloudinary upload bypasses Vercel size limit
+- Background sync enabled via Service Worker
+- Production deployed: https://my-project-two-tau-92.vercel.app
