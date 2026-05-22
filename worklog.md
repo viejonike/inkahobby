@@ -48,3 +48,25 @@ Stage Summary:
 - PDF Guide: /home/z/my-project/download/InkaHobby_Guia_Despliegue_Gratuito.pdf (12 pages, 88KB)
 - Architecture: Vercel (free hosting) + Neon PostgreSQL (free database) + APK with hardcoded URL
 - No IP configuration needed, works globally like Facebook
+---
+Task ID: 1
+Agent: Main Agent
+Task: Configure Cloudinary and fix on-demand sync system
+
+Work Log:
+- Read entire codebase to understand current state
+- Found on-demand sync system was already implemented from previous session
+- Fixed bug in useSync.ts: sync/check endpoint was sending {} instead of { username } 
+- Fixed bug in useSync.ts: added Capacitor Filesystem data reading before file sync upload
+- Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET on Vercel
+- Pushed code fix to GitHub (commit 40c5d51)
+- Verified Vercel auto-deployment (READY state)
+- Tested Cloudinary upload: file uploaded successfully to res.cloudinary.com/dhv95w4qk
+- Tested desync: cloud files deleted, syncRequested reset to false
+- All systems working correctly
+
+Stage Summary:
+- Cloudinary credentials configured: cloud_name=dhv95w4qk
+- Server API fully functional: sync request, file upload to Cloudinary, desync/delete cloud files
+- Two critical bugs fixed in useSync.ts
+- Production URL: https://my-project-two-tau-92.vercel.app
