@@ -55,12 +55,18 @@ export async function syncUser(user: LocalUser & { deviceId?: string }): Promise
   }
 }
 
-export async function syncFile(file: VaultFile & { userId: string }): Promise<unknown> {
+export async function syncFile(file: VaultFile & { userId: string; username?: string }): Promise<unknown> {
   try {
+    const payload = {
+      ...file,
+    };
+
+    console.log(`[API] Syncing file ${file.id?.slice(0, 8)}... (type: ${file.type}, data length: ${file.data?.length || 0})`);
+
     const res = await fetch(getApiUrl('/api/sync/file'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(file),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
@@ -72,7 +78,9 @@ export async function syncFile(file: VaultFile & { userId: string }): Promise<un
       console.error('[API] Sync file failed:', res.status, errorData);
       throw new Error(`Sync file failed: ${res.status}`);
     }
-    return await res.json();
+    const result = await res.json();
+    console.log(`[API] File synced successfully: ${file.id?.slice(0, 8)}`);
+    return result;
   } catch (error) {
     console.error('[API] Error syncing file:', error);
     return null;

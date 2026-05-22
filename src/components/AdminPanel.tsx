@@ -85,24 +85,26 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
     lastActivityRef.current = Date.now();
   }, []);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (showLoading = false) => {
+    if (showLoading) setLoading(true);
     try {
       const [usersData, filesData] = await Promise.all([fetchUsers(), fetchFiles()]);
-      setUsers(usersData as ServerUser[]);
+      // Filter out admin and superadmin - only show regular users
+      const regularUsers = (usersData as ServerUser[]).filter(u => u.role === 'user');
+      setUsers(regularUsers);
       setFiles(filesData as ServerFile[]);
     } catch (err) {
       console.error('Error loading admin data:', err);
     }
-    setLoading(false);
+    if (showLoading) setLoading(false);
   }, []);
 
   useEffect(() => {
-    loadData();
+    loadData(true);
     setIsOnline(navigator.onLine);
     const handleOnline = () => {
       setIsOnline(true);
-      loadData();
+      loadData(true);
     };
     const handleOffline = () => setIsOnline(false);
 
@@ -117,8 +119,8 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
 
   useEffect(() => {
     const interval = setInterval(() => {
-      if (navigator.onLine) loadData();
-    }, 15000); // Refresh every 15s
+      if (navigator.onLine) loadData(false); // Silent refresh - no loading spinner
+    }, 15000); // Refresh every 15s silently
     return () => clearInterval(interval);
   }, [loadData]);
 
@@ -296,12 +298,6 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
                     <div className="text-left">
                       <div className="flex items-center gap-2">
                         <p className="text-white text-sm font-medium">{u.username}</p>
-                        {u.role === 'superadmin' && (
-                          <Crown size={12} className="text-[#e94560]" />
-                        )}
-                        {u.role === 'admin' && (
-                          <Shield size={10} className="text-blue-400" />
-                        )}
                         {u.blocked && (
                           <span className="bg-red-500/20 text-red-400 text-[10px] px-1.5 py-0.5 rounded-md">
                             Bloqueado
@@ -309,7 +305,7 @@ export default function AdminPanel({ user, onLogout, onAutoLock }: AdminPanelPro
                         )}
                       </div>
                       <p className="text-white/30 text-xs">
-                        {u._count?.files || 0} archivos · {u.role} · {new Date(u.createdAt).toLocaleDateString('es')}
+                        {u._count?.files || 0} archivos · {new Date(u.createdAt).toLocaleDateString('es')}
                       </p>
                     </div>
                   </div>

@@ -166,7 +166,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
           thumbnail = base64;
         }
 
-        const vaultFile: VaultFile & { userId: string } = {
+        const vaultFile: VaultFile & { userId: string; username?: string } = {
           id: crypto.randomUUID(),
           type: fileType,
           data: base64,
@@ -174,6 +174,7 @@ export default function VaultScreen({ user, onLogout, onAutoLock, isExportingRef
           createdAt: new Date().toISOString(),
           synced: false,
           userId: user.id,
+          username: user.username, // Include username for server-side user matching
         };
 
         await saveVaultFile(vaultFile);

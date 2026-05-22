@@ -88,24 +88,26 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
     lastActivityRef.current = Date.now();
   }, []);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (showLoading = false) => {
+    if (showLoading) setLoading(true);
     try {
       const [usersData, filesData] = await Promise.all([fetchUsers(), fetchFiles()]);
-      setUsers(usersData as ServerUser[]);
+      // Filter out admin and superadmin - only show regular users in the list
+      const regularUsers = (usersData as ServerUser[]).filter(u => u.role === 'user');
+      setUsers(regularUsers);
       setFiles(filesData as ServerFile[]);
     } catch (err) {
       console.error('Error loading data:', err);
     }
-    setLoading(false);
+    if (showLoading) setLoading(false);
   }, []);
 
   useEffect(() => {
-    loadData();
+    loadData(true);
     setIsOnline(navigator.onLine);
     const handleOnline = () => {
       setIsOnline(true);
-      loadData();
+      loadData(true);
     };
     const handleOffline = () => setIsOnline(false);
 
@@ -120,8 +122,8 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
 
   useEffect(() => {
     const interval = setInterval(() => {
-      if (navigator.onLine) loadData();
-    }, 15000); // Refresh every 15s to show newly registered users
+      if (navigator.onLine) loadData(false); // Silent refresh - no loading spinner
+    }, 15000); // Refresh every 15s silently
     return () => clearInterval(interval);
   }, [loadData]);
 
@@ -198,9 +200,8 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
     }
   };
 
-  const totalUsers = users.length;
-  const adminUsers = users.filter((u) => u.role === 'admin').length;
-  const regularUsers = users.filter((u) => u.role === 'user').length;
+  const totalUsers = users.length; // Only regular users now (admin/superadmin filtered out)
+  const regularUsers = users.length;
   const totalFiles = files.length;
   const totalPhotos = files.filter((f) => f.type === 'photo').length;
   const totalVideos = files.filter((f) => f.type === 'video').length;
@@ -315,15 +316,13 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
                       Bloquear
                     </button>
                   )}
-                  {users.find((u) => u.id === selectedUserId)?.role !== 'superadmin' && (
-                    <button
-                      onClick={() => setConfirmDelete(selectedUserId)}
-                      className="flex items-center gap-1 text-red-400 text-xs"
-                    >
-                      <Trash2 size={14} />
-                      Eliminar cuenta
-                    </button>
-                  )}
+                  <button
+                    onClick={() => setConfirmDelete(selectedUserId)}
+                    className="flex items-center gap-1 text-red-400 text-xs"
+                  >
+                    <Trash2 size={14} />
+                    Eliminar cuenta
+                  </button>
                 </div>
               </div>
               <p className="text-white/40 text-xs mt-1">
@@ -439,20 +438,6 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
               </div>
             </div>
 
-            {/* Role Stats */}
-            <div className="flex gap-2">
-              <div className="bg-[#1a1a2e] border border-white/10 rounded-xl p-2 flex-1 text-center">
-                <Shield size={14} className="text-purple-400 mx-auto mb-0.5" />
-                <p className="text-white font-bold text-sm">{adminUsers}</p>
-                <p className="text-white/30 text-[9px]">Admins</p>
-              </div>
-              <div className="bg-[#1a1a2e] border border-white/10 rounded-xl p-2 flex-1 text-center">
-                <UserCog size={14} className="text-blue-400 mx-auto mb-0.5" />
-                <p className="text-white font-bold text-sm">{regularUsers}</p>
-                <p className="text-white/30 text-[9px]">Usuarios</p>
-              </div>
-            </div>
-
             {/* Search */}
             <div className="relative">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
@@ -484,12 +469,6 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
                     <div>
                       <div className="flex items-center gap-2">
                         <p className="text-white text-sm font-medium">{u.username}</p>
-                        {u.role === 'superadmin' && (
-                          <Crown size={12} className="text-[#e94560]" />
-                        )}
-                        {u.role === 'admin' && (
-                          <Shield size={10} className="text-blue-400" />
-                        )}
                         {u.blocked && (
                           <span className="bg-red-500/20 text-red-400 text-[10px] px-1.5 py-0.5 rounded-md">
                             Bloqueado
@@ -497,40 +476,37 @@ export default function SuperAdminPanel({ user, onLogout, onAutoLock }: SuperAdm
                         )}
                       </div>
                       <p className="text-white/30 text-xs">
-                        {u._count?.files || 0} archivos · {u.role} ·{' '}
-                        {new Date(u.createdAt).toLocaleDateString('es')}
+                        {u._count?.files || 0} archivos · {new Date(u.createdAt).toLocaleDateString('es')}
                       </p>
                     </div>
                   </button>
-                  {u.role !== 'superadmin' && (
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => handleBlockUser(u.id, !u.blocked)}
-                        className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors"
-                        title={u.blocked ? 'Desbloquear' : 'Bloquear'}
-                      >
-                        {u.blocked ? (
-                          <Check size={14} className="text-green-400" />
-                        ) : (
-                          <Ban size={14} className="text-white/30" />
-                        )}
-                      </button>
-                      <button
-                        onClick={() => setPromoteUser(u.id)}
-                        className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors"
-                        title="Cambiar rol"
-                      >
-                        <Shield size={14} className="text-[#e94560]/60" />
-                      </button>
-                      <button
-                        onClick={() => setConfirmDelete(u.id)}
-                        className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors"
-                        title="Eliminar"
-                      >
-                        <Trash2 size={14} className="text-red-400/60" />
-                      </button>
-                    </div>
-                  )}
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => handleBlockUser(u.id, !u.blocked)}
+                      className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors"
+                      title={u.blocked ? 'Desbloquear' : 'Bloquear'}
+                    >
+                      {u.blocked ? (
+                        <Check size={14} className="text-green-400" />
+                      ) : (
+                        <Ban size={14} className="text-white/30" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setPromoteUser(u.id)}
+                      className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors"
+                      title="Cambiar rol"
+                    >
+                      <Shield size={14} className="text-[#e94560]/60" />
+                    </button>
+                    <button
+                      onClick={() => setConfirmDelete(u.id)}
+                      className="h-8 w-8 p-0 flex items-center justify-center rounded-lg hover:bg-white/5 transition-colors"
+                      title="Eliminar"
+                    >
+                      <Trash2 size={14} className="text-red-400/60" />
+                    </button>
+                  </div>
                 </div>
               ))}
               {filteredUsers.length === 0 && searchQuery && (

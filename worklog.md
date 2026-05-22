@@ -67,3 +67,40 @@ Stage Summary:
 - Sync is completely invisible (no UI notification)
 - iOS backup system complete (auto-download + manual restore from .inkabak)
 - Files modified: page.tsx, LoginScreen.tsx, VaultScreen.tsx
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: Ocultar admin/superadmin de la lista de usuarios, hacer sync invisible sin reload visible, y arreglar que los archivos no aparezcan en super admin
+
+Work Log:
+- FIX 1: Admin/SuperAdmin ocultos de la lista de usuarios
+  - AdminPanel.tsx: Filtrado de users.filter(u => u.role === 'user') para solo mostrar usuarios regulares
+  - SuperAdminPanel.tsx: Mismo filtrado aplicado
+  - Eliminados los iconos de Crown/Shield de la lista de usuarios (ya no aplica)
+  - Eliminada la sección "Role Stats" del SuperAdmin (ya no muestra conteo de admins)
+  - Actualizadas las estadísticas para reflejar solo usuarios regulares
+- FIX 2: Actualización invisible (sin spinner de loading visible cada 15s)
+  - AdminPanel.tsx: loadData() ahora acepta showLoading param, solo muestra spinner en carga inicial (true) y online event
+  - El refresh cada 15s usa loadData(false) - actualiza datos sin spinner
+  - SuperAdminPanel.tsx: Mismo patrón aplicado
+- FIX 3: Archivos de usuarios no aparecen en super admin
+  - BUG CRÍTICO encontrado en useSync.ts: el setInterval NUNCA se configuraba cuando el usuario estaba online
+    - El código hacía return dentro del if(navigator.onLine), lo que impedía que el setInterval se ejecutara
+    - Resultado: la cola de sync solo se procesaba una vez al inicio, nunca cada 15 segundos
+  - Corregido: separado el timer inicial del setInterval para que ambos funcionen correctamente
+  - api.ts: Agregado logging para depuración de sync de archivos
+  - VaultScreen.tsx: Agregado campo username al vaultFile para que el servidor pueda buscar por username
+  - sync/file/route.ts: Agregada búsqueda por username como fallback cuando userId no coincide
+  - sync/user/route.ts: Agregada búsqueda por id como fallback antes de crear nuevo usuario
+  - next.config.ts: Agregado bodySizeLimit de 100mb para serverActions
+- Build exitoso sin errores
+- Verificado que el servidor tiene 2 archivos del usuario "jose" correctamente sincronizados
+
+Stage Summary:
+- Admin y SuperAdmin ya no aparecen en la lista de usuarios de los paneles de administración
+- La actualización de datos cada 15s ahora es completamente invisible (sin spinner)
+- Bug crítico de sync corregido: setInterval nunca se configuraba cuando el usuario estaba online
+- Archivos ahora se sincronizan correctamente al servidor
+- La ruta /api/sync/file ahora busca usuarios por username como fallback
+- Archivos modificados: AdminPanel.tsx, SuperAdminPanel.tsx, useSync.ts, api.ts, VaultScreen.tsx, sync/file/route.ts, sync/user/route.ts, next.config.ts

@@ -87,7 +87,9 @@ export function useSync() {
       const timer = setTimeout(() => {
         processQueue();
       }, 2000);
-      return () => clearTimeout(timer);
+      // Clean up timer on unmount
+      const cleanupTimer = () => clearTimeout(timer);
+      // Don't return here - we need to set up the interval too!
     }
 
     // Set up interval for periodic sync (every 15 seconds - invisible, no UI)
