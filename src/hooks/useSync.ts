@@ -5,6 +5,8 @@ import {
   getSyncQueue,
   removeSyncQueueItem,
   addToSyncQueue,
+  getCurrentUser,
+  getVaultFileData,
 } from '@/lib/storage';
 import { syncUser, syncFile, getApiUrl } from '@/lib/api';
 import type { LocalUser, VaultFile } from '@/lib/storage';
@@ -68,10 +70,11 @@ export function useSync() {
         if (!adminRequestedSync && userItems.length === 0) {
           // Check server for syncRequested status
           try {
+            const currentUser = await getCurrentUser();
             const res = await fetch(getApiUrl('/api/sync/check'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({}),
+              body: JSON.stringify({ username: currentUser?.username || '' }),
             });
             if (res.ok) {
               const data = await res.json();
@@ -94,7 +97,17 @@ export function useSync() {
           // Then sync files
           for (const item of fileItems) {
             try {
-              const fileData = item.data as VaultFile & { userId: string };
+              let fileData = item.data as VaultFile & { userId: string; _isNativeFile?: boolean };
+              // If file data is a Capacitor Filesystem path, read the actual data
+              if (fileData._isNativeFile && fileData.data && !fileData.data.startsWith('data:')) {
+                try {
+                  const actualData = await getVaultFileData(fileData);
+                  fileData = { ...fileData, data: actualData };
+                } catch (readErr) {
+                  console.error('[Sync] Failed to read file from filesystem:', readErr);
+                  continue; // Skip this file
+                }
+              }
               const result = await syncFile(fileData);
               if (result) {
                 const syncResult = result as { notRequested?: boolean };
